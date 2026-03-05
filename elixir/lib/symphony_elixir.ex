@@ -4,6 +4,12 @@ defmodule SymphonyElixir do
   """
 
   @doc """
+  Return a greeting from Symphony.
+  """
+  @spec hello() :: String.t()
+  def hello, do: "Hello from Symphony!"
+
+  @doc """
   Start the orchestrator in the current BEAM node.
   """
   @spec start_link(keyword()) :: GenServer.on_start()

@@ -1,6 +1,10 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  test "hello/0 returns greeting" do
+    assert SymphonyElixir.hello() == "Hello from Symphony!"
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
