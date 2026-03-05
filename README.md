@@ -36,6 +36,10 @@ help with the setup:
 
 ---
 
+## Test Marker
+
+Hello from Symphony.
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
