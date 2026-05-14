@@ -220,6 +220,26 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp tracker_backend_yaml("memory", _config), do: "memory: {}"
+
+  defp tracker_backend_yaml("jira", config) do
+    base_url = Keyword.get(config, :tracker_base_url, "https://example.atlassian.net")
+    email = Keyword.get(config, :tracker_email, "test@example.com")
+    api_token = Keyword.get(config, :tracker_api_token, "test-jira-token")
+    project_keys = Keyword.get(config, :tracker_project_keys, ["TEST"])
+    trigger_label = Keyword.get(config, :tracker_trigger_label)
+
+    [
+      "jira:",
+      "  base_url: #{yaml_value(base_url)}",
+      "  email: #{yaml_value(email)}",
+      "  api_token: #{yaml_value(api_token)}",
+      "  project_keys: #{yaml_value(project_keys)}",
+      trigger_label && "  trigger_label: #{yaml_value(trigger_label)}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
   defp tracker_backend_yaml(nil, _config), do: nil
   defp tracker_backend_yaml(_kind, _config), do: nil
 

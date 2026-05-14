@@ -22,7 +22,7 @@ defmodule SymphonyElixir.Config do
   @default_observability_render_interval_ms 16
   @default_server_host "127.0.0.1"
 
-  @tracker_sections ["linear", "github", "memory"]
+  @tracker_sections ["linear", "github", "jira", "memory"]
   @agent_sections ["claude", "codex"]
 
   @workflow_options_schema NimbleOptions.new!(
@@ -303,6 +303,7 @@ defmodule SymphonyElixir.Config do
     case tracker_kind() do
       "linear" -> SymphonyElixir.Linear.Config
       "github" -> SymphonyElixir.GitHub.Config
+      "jira" -> SymphonyElixir.Jira.Config
       "memory" -> SymphonyElixir.Memory.Config
     end
   end
