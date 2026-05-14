@@ -1694,6 +1694,32 @@ defmodule SymphonyElixir.CoreTest do
 
       assert Workspace.preflight_check("PROOF-008") == :proceed_clean
     end
+
+    test "orphan agent branch + HEAD on main with upstream tracking -> {:refuse, :orphan_branch, _, _}", %{workspace_root: root} do
+      # Regression guard for a bug where the orphan-branch check used the
+      # CURRENT branch's upstream rather than the orphan branch's remote
+      # reachability. With HEAD on main (which tracks origin/main) and a
+      # local agent/*-fix branch holding unpushed commits, cleaning would
+      # silently lose the agent's work.
+      repo = Path.join([root, "PROOF-009", "repo"])
+      remote = Path.join([root, "PROOF-009", "remote.git"])
+      init_clean_repo(repo)
+
+      System.cmd("git", ["-C", repo, "init", "--bare", remote])
+      System.cmd("git", ["-C", repo, "remote", "add", "origin", remote])
+      System.cmd("git", ["-C", repo, "push", "-u", "origin", "main"])
+
+      # Build local agent branch with unpushed commit, then return to main.
+      System.cmd("git", ["-C", repo, "checkout", "-b", "agent/PROOF-009-fix"])
+      File.write!(Path.join(repo, "fix.txt"), "fix content")
+      System.cmd("git", ["-C", repo, "add", "fix.txt"])
+      System.cmd("git", ["-C", repo, "commit", "-m", "PROOF-009: fix"])
+      System.cmd("git", ["-C", repo, "checkout", "main"])
+
+      assert {:refuse, :orphan_branch, workspace, branch} = Workspace.preflight_check("PROOF-009")
+      assert workspace == Path.join(root, "PROOF-009")
+      assert branch == "agent/PROOF-009-fix"
+    end
   end
 
   defp init_clean_repo(repo_dir) do

@@ -26,6 +26,13 @@ defmodule SymphonyElixir.AgentRunner do
 
       decision when decision in [:proceed_create, :proceed_clean] ->
         do_run(issue, codex_update_recipient, opts)
+
+      other ->
+        # Defensive: if preflight grows a new return shape we don't handle,
+        # exit cleanly with a structured reason rather than crashing the
+        # task (which would trigger the orchestrator's retry loop).
+        Logger.error("Unknown preflight decision for #{issue_context(issue)}: #{inspect(other)}")
+        exit({:shutdown, {:workspace_preflight_unknown, other}})
     end
   end
 

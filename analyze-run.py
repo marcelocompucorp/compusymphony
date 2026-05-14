@@ -78,13 +78,16 @@ TESTS_NOT_RUN_DISCLAIMER = re.compile(
     re.IGNORECASE,
 )
 
-# Triage-first check: WORKFLOW.md step 1a says read the ticket BEFORE any
-# other work. The first MCP Atlassian call should be a get/read, never a
-# write (no comment, no edit) — and it should happen before any non-ticket
-# tool use (no Bash, no Read of repo files, no Skill).
-TRIAGE_FIRST_ALLOWED_NAMES = (
+# Triage-first check: WORKFLOW.md step 1a says read THIS ticket BEFORE
+# any other work. The first MCP Atlassian call must be `getJiraIssue` or
+# a comments read for the working ticket — not a generic search, not a
+# write. Generic search calls (`search`, `searchJiraIssuesUsingJql`) are
+# legitimate but should NEVER come first; if they do, the agent is
+# exploring instead of triaging, which violates step 1a.
+TRIAGE_FIRST_REQUIRED_PREFIXES = ("getJiraIssue",)
+TRIAGE_FIRST_ALLOWED_LATER = (
     "getJiraIssue",
-    "search",  # Atlassian semantic search; agent may use this to find related tickets
+    "search",
     "searchJiraIssuesUsingJql",
     "getAccessibleAtlassianResources",
     "atlassianUserInfo",
@@ -208,7 +211,16 @@ def analyze(path):
                 todowrites += 1
             elif name in ("Agent", "Task"):
                 desc = (inp.get("description", "") or "").lower()
-                looks_reviewer = any(k in desc for k in ("review", "critique", "audit"))
+                prompt = inp.get("prompt", "") or ""
+                # Tightened reviewer detection: trust description keywords as a hint
+                # but ALSO accept any dispatch whose prompt references the canonical
+                # prompts/code-reviewer.md file. WORKFLOW.md invariant #9 mandates
+                # passing that file; an agent doing self-review by chance won't.
+                looks_reviewer = (
+                    any(k in desc for k in ("review", "critique", "audit"))
+                    or "prompts/code-reviewer.md" in prompt
+                    or "code-reviewer-schema.json" in prompt
+                )
                 reviewer_dispatches.append({
                     "line": idx,
                     "subagent_type": inp.get("subagent_type"),
@@ -375,9 +387,14 @@ def analyze(path):
             if first_work:
                 break
 
-        ticket_read_ok = any(allowed in first_name for allowed in TRIAGE_FIRST_ALLOWED_NAMES)
+        ticket_read_ok = any(req in first_name for req in TRIAGE_FIRST_REQUIRED_PREFIXES)
         if not ticket_read_ok:
-            print(f"  ⚠️  First MCP call was {first_name!r} (line {first_idx}), not a ticket-read operation.")
+            allowed_later_ok = any(allowed in first_name for allowed in TRIAGE_FIRST_ALLOWED_LATER)
+            if allowed_later_ok:
+                print(f"  ⚠️  First MCP call was {first_name!r} (line {first_idx}) — that's a generic search/lookup, not THIS ticket's read.")
+                print("     WORKFLOW.md step 1a requires `getJiraIssue` (or comments read for the working ticket) as the FIRST MCP call.")
+            else:
+                print(f"  ⚠️  First MCP call was {first_name!r} (line {first_idx}), not a ticket-read operation.")
         elif first_work and first_work[0] < first_idx:
             print(f"  ⚠️  Agent did {first_work[1]} (line {first_work[0]}) BEFORE reading the ticket via MCP (line {first_idx}).")
             print("     WORKFLOW.md step 1a requires reading the ticket first.")

@@ -132,6 +132,8 @@ These override defaults; treat them as hard rules.
 
    This invariant supersedes the legacy `/review` slash command (now optional). Reviewer skip is the highest-impact failure mode the audit looks for — see `analyze-run.sh`.
 
+10. **PII redaction when citing external observability data.** Several read-only credentials (SendGrid Mail Activity, MongoDB `compucorp.sites`, Loki stack logs) return responses that contain **end-user PII** — recipient email addresses, full names, sometimes contact comments. The full JSONL transcript of your run is persisted by the audit (`analyze-run.sh`) and visible to operators reviewing the run, and anything you paste into a PR description or Jira comment is permanent. When citing evidence from these sources: **redact recipient emails** (`r***@example.com`), do NOT paste contact names verbatim, do NOT include subject lines or message bodies. Quote only the structural evidence (timestamps, status codes, IDs) that supports the fix. See `prompts/TOOLS.md` §SendGrid for the canonical redaction pattern.
+
 ## Required skills (invoke via the `Skill` tool, in order)
 
 The integration depends on these — do not skip:
@@ -232,7 +234,7 @@ For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the shor
    - `reject` with BLOCKERs/QUESTIONs and N < 3 → fix the BLOCKERs (revise plan + code), re-dispatch (back to 12a)
    - `reject` and N == 3 → STOP. Post Jira comment quoting `review-result-r3.json.findings` (BLOCKERs only) and the rounds attempted. Leave `agent:todo` label ON. Exit without opening PR.
 
-   12c. **`gh pr create`** with body following `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). Target the repo's default branch (`master` for `ase`, the current `7.x-N.x` major-version branch for `compuclient`). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
+   12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round. Never run `gh pr create` directly without that round having been the final action; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). Target the repo's default branch (`master` for `ase`, the current `7.x-N.x` major-version branch for `compuclient`). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
 
 13. **Post the PR link as a Jira comment** via the Atlassian MCP. One concise comment, e.g.: `PR: https://github.com/... — please review.`
 

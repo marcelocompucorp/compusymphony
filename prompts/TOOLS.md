@@ -5,6 +5,7 @@ Operational tooling reference adapted from `openclaw-configurations/TOOLS.md` an
 ## General rules
 
 - **All credentials below are read-only.** The agent must NOT attempt writes via any of these services — writes are restricted to git operations on the target repo, opening the PR, and the single Jira comment posting the PR link.
+- **PII redaction (WORKFLOW.md invariant #10).** Several services (SendGrid Mail Activity, MongoDB `compucorp.sites`, Loki) return end-user PII — recipient emails, contact names, message bodies. The full JSONL transcript is persisted by the audit. When citing this data in a PR or Jira comment, **redact recipient emails** as `r***@example.com`, do not paste contact names verbatim, and do not include subject lines or message bodies. Quote only the structural evidence (timestamps, status codes, IDs).
 - Prefer **time-bounded queries** — start with a 30 min / 1 h window and expand if needed.
 - Use `python3`, not `python`.
 - Do not echo raw secrets/tokens back into the agent transcript or PR description.

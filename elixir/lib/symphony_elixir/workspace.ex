@@ -68,14 +68,18 @@ defmodule SymphonyElixir.Workspace do
   defp classify_git_state(workspace, repo_dir) do
     dirty? = git_dirty?(repo_dir)
     ahead? = git_commits_ahead?(repo_dir)
-    has_upstream? = git_has_upstream?(repo_dir)
     agent_branch = git_orphan_agent_branch(repo_dir)
     recent? = workspace_recently_touched?(repo_dir)
 
     cond do
-      # 1. Agent branch exists but has no upstream — cleaning would lose commits.
-      # This is independent of mtime; even old orphan branches are operator data.
-      agent_branch != nil and not has_upstream? ->
+      # 1. An agent/*-fix branch exists with commits not reachable from any
+      # remote ref. Cleaning would lose operator data regardless of what HEAD
+      # is currently checked out to. (Earlier this clause also required the
+      # CURRENT branch to have no upstream — that was wrong: if HEAD is
+      # master tracking origin/master, the orphan agent branch would slip
+      # past. `branch_has_unpublished_commits?` already does the correct
+      # per-branch check via `rev-list <branch> --not --remotes`.)
+      agent_branch != nil ->
         {:refuse, :orphan_branch, workspace, agent_branch}
 
       # 2. Live agent run (or just-killed): refuse to touch.
@@ -108,13 +112,6 @@ defmodule SymphonyElixir.Workspace do
 
       _ ->
         false
-    end
-  end
-
-  defp git_has_upstream?(repo_dir) do
-    case System.cmd("git", ["-C", repo_dir, "rev-parse", "--abbrev-ref", "@{u}"], stderr_to_stdout: true) do
-      {_output, 0} -> true
-      _ -> false
     end
   end
 
