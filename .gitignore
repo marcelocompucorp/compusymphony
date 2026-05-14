@@ -1,0 +1,12 @@
+# Symphony runtime logs (Erlang disk_log wrap format — binary, machine-specific).
+# `start-symphony.sh` cd's to the repo root before exec'ing symphony, so the
+# log directory is created here. Don't commit it.
+log/
+
+# macOS Finder metadata.
+.DS_Store
+**/.DS_Store
+
+# Scratch files local to an operator's run (smoke tests, manual debug output).
+/tmp_*
+*.scratch.md
