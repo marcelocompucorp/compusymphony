@@ -60,7 +60,27 @@ defmodule SymphonyElixir.Orchestrator do
       agent_rate_limits: nil
     }
 
-    run_terminal_workspace_cleanup()
+    # Run the terminal-workspace cleanup OUT-OF-BAND under TaskSupervisor.
+    #
+    # This used to be a synchronous call inside `init/1`. For trackers whose
+    # `fetch_issues_by_states(terminal_states)` returns a bounded result set
+    # (e.g. a Linear team or a single GitHub repo) that was fine.
+    #
+    # For Jira at Compucorp scale — with no `project_keys` filter — the JQL
+    # `status IN ("Done", "Closed", "Resolved", "Done/Final close")` paginates
+    # through every terminal ticket in the tenant (10k+), which makes init
+    # block long enough that the rest of the supervision tree (HttpServer,
+    # StatusDashboard) never starts. Symptom: Phoenix dashboard never binds
+    # port, and `Supervisor.which_children` shows children stuck at startup.
+    #
+    # Detaching to TaskSupervisor lets init return immediately so the rest of
+    # the tree comes up. The cleanup is a no-op today
+    # (`cleanup_issue_workspace/1` is `do: :ok`) but the structure remains so
+    # the cleanup can be filled in later without re-introducing the block.
+    Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+      run_terminal_workspace_cleanup()
+    end)
+
     :ok = schedule_tick(0)
 
     {:ok, state}

@@ -35,6 +35,14 @@ tracker:
     - Closed
     - Resolved
     - Done/Final close
+server:
+  # HTTP observability dashboard (Phoenix LiveView, separate from the ANSI
+  # terminal dashboard gated by `observability.dashboard_enabled`).
+  # `SymphonyElixir.HttpServer.start_link/1` returns `:ignore` if `port` is
+  # not a non-negative integer — leaving this section out silently disables
+  # the dashboard. Visit http://127.0.0.1:4000/ once Symphony is up.
+  port: 4000
+  host: 127.0.0.1
 polling:
   interval_ms: 30000
 workspace:
@@ -46,10 +54,10 @@ claude:
   command: symphony-claude
 observability:
   # ANSI dashboard disabled — it doesn't render cleanly in some terminals
-  # (macOS Terminal.app in particular), and the Phoenix HTTP dashboard isn't
-  # starting from the local escript build (under investigation as fase futura;
-  # see QA-HANDOFF §8). Monitor via `./tail-log.sh` which tails the disk log
-  # as plain text.
+  # (macOS Terminal.app in particular). The Phoenix HTTP dashboard is enabled
+  # separately via the `server:` block above (default http://127.0.0.1:4000/).
+  # If neither is wanted, monitor via `./tail-log.sh` which tails the disk
+  # log as plain text.
   dashboard_enabled: false
 hooks:
   timeout_ms: 60000
