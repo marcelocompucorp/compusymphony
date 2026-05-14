@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Compucorp autonomous code reviewer output (v1)",
+  "description": "Structured output from a fresh-context reviewer subagent dispatched per prompts/code-reviewer.md. Symphony's audit (analyze-run.py) and the parent agent's loop policy depend on schema-strict output.",
+  "type": "object",
+  "required": ["reviewer_prompt_version", "verdict", "summary", "findings"],
+  "properties": {
+    "reviewer_prompt_version": {
+      "description": "Echoes prompts/code-reviewer.md frontmatter's prompt_version. Lets analyze-run.py detect cases where an outdated prompt was used.",
+      "type": "string"
+    },
+    "verdict": {
+      "description": "approve = no BLOCKERs and no unresolved QUESTIONs and (if re-review) all prior findings resolved. reject = otherwise.",
+      "type": "string",
+      "enum": ["approve", "reject"]
+    },
+    "summary": {
+      "description": "One- or two-sentence rationale for the verdict, plain English. Goes into PR Comments if the verdict is approve, or into the Jira escalation comment if reject after final round.",
+      "type": "string",
+      "maxLength": 600
+    },
+    "trace": {
+      "description": "Optional but recommended: the reviewer's explicit ticket-symptom -> plan-hypothesis -> diff-hunk trace, for audit. If the trace cannot be made, output a BLOCKER finding in `findings` and leave this null.",
+      "type": ["object", "null"],
+      "properties": {
+        "ticket_symptom": {"type": "string"},
+        "plan_hypothesis": {"type": "string"},
+        "diff_hunk_reference": {"type": "string"}
+      }
+    },
+    "findings": {
+      "description": "All findings from this review round. Empty array = no issues.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "file", "message"],
+        "properties": {
+          "id": {
+            "description": "Stable identifier for this finding within the round (e.g. 'r2-blocker-1'). Used by the next round's prior_findings_addressed entries.",
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_.-]+$"
+          },
+          "severity": {
+            "description": "Compucorp severity rubric (ai-code-review.md). BLOCKER blocks PR, WARNING should be fixed or documented, SUGGESTION is optional, QUESTION needs human input (escalates).",
+            "type": "string",
+            "enum": ["BLOCKER", "WARNING", "SUGGESTION", "QUESTION"]
+          },
+          "file": {
+            "description": "Relative path within <workspace>/repo. Use 'general' if not tied to a specific file (e.g. missing test, PR body issue).",
+            "type": "string"
+          },
+          "line": {
+            "description": "1-based line in the post-fix file. Null if not applicable.",
+            "type": ["integer", "null"]
+          },
+          "message": {
+            "description": "What is wrong + why it matters. Cite file:line if available. Be specific.",
+            "type": "string",
+            "minLength": 1
+          },
+          "suggested_fix": {
+            "description": "Concrete fix instruction. Optional but strongly preferred.",
+            "type": ["string", "null"]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "prior_findings_addressed": {
+      "description": "Required when prior_findings is passed as input. One entry per prior finding by id. Missing ids = output is incomplete and parent must re-prompt.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": {
+            "description": "Matches the id field from the prior round's finding.",
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["resolved", "still_applies", "superseded"]
+          },
+          "evidence": {
+            "description": "For resolved: cite file:line of the fix. For still_applies: explain why the parent's attempted fix is insufficient. For superseded: cite the change that obviated the finding.",
+            "type": ["string", "null"]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
