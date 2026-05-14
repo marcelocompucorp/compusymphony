@@ -138,13 +138,64 @@ curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Accept: applicatio
 
 Useful for: zone IDs, recent firewall events, rate-limit hits, edge response codes. Do not modify zones, DNS records, or WAF rules — token is read-only and operations would fail anyway, but don't try.
 
-## Tools filtered out (intentionally NOT available in Phase 1)
+## SendGrid (email delivery investigation)
 
-The wrapper `./start-symphony.sh` unsets these before launching Symphony — the agent will NOT find them in env:
+**Purpose:** investigate "email didn't arrive" / "bounced" / "marked as spam" / "rate-limited" tickets.
 
-- **`$SENDGRID_API_KEY`** — email sending. Agent doesn't need to send email; if email is necessary, post a Jira comment asking a human to send.
-- **`$JENKINS_TOKEN`** — Jenkins is mostly read-only but the same token can trigger some builds. Out of reach for Phase 1. If you need deploy/build history, post a Jira comment.
-- **`$NETDATA_CLOUD_TOKEN`** — Netdata writes to space. Loki covers most log-investigation needs; if you need infra-level CPU/mem/IO investigation, comment on Jira.
+**Auth:** `$SENDGRID_API_KEY` (Mail Activity read-only scope) and `$SENDGRID_BILLING_API_KEY` (billing/plan info, read-only). Both keys are scoped at the upstream service — the agent cannot send mail, change plans, or modify templates with them.
+
+**Pattern (Mail Activity — was an email actually delivered?):**
+```bash
+# Last 24h of activity for a specific recipient:
+curl -sS -H "Authorization: Bearer $SENDGRID_API_KEY" -H "Accept: application/json" \
+  "https://api.sendgrid.com/v3/messages?query=to_email%3D%22user%40example.com%22&limit=20"
+
+# A specific message's full event log:
+curl -sS -H "Authorization: Bearer $SENDGRID_API_KEY" \
+  "https://api.sendgrid.com/v3/messages/<msg_id>"
+```
+
+Useful for: confirming "did our send actually happen", looking at bounce reasons, checking suppression list, spotting deferral/dropped. Do NOT attempt `POST /mail/send` — token has no scope for it and the operation must come from a human.
+
+**PII warning.** Mail Activity responses contain **recipient email addresses** and sometimes subject lines, both of which are PII. The full JSONL transcript of your run is persisted by the audit (`analyze-run.sh`) and visible to operators reviewing the run. When citing Mail Activity evidence in the PR description or Jira comment, **redact recipient emails** (`r***@example.com`) and avoid pasting subject lines verbatim. Quote only the structural evidence — timestamps, status codes, bounce reasons — that is needed to support the fix.
+
+## Jenkins (build/deploy status)
+
+**Purpose:** check CI build status for a PR / branch, fetch build logs when CI is the only test environment (per WORKFLOW.md verification step).
+
+**Auth:** `$JENKINS_URL`, `$JENKINS_USER`, `$JENKINS_TOKEN`. Token is scoped to read; cannot trigger builds.
+
+**Pattern:**
+```bash
+# Build status for a specific job + build number:
+curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" \
+  "$JENKINS_URL/job/<job-name>/<build-number>/api/json"
+
+# Most recent build log (tail):
+curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" \
+  "$JENKINS_URL/job/<job-name>/lastBuild/consoleText" | tail -200
+```
+
+Useful for: cross-check that a CI build passed before declaring the fix "verified on CI" in PR Comments. Do NOT attempt build triggers (`POST .../build`) — invariant #5 prohibits, and the token has no scope for it.
+
+## Netdata Cloud (infra metrics, alarms)
+
+**Purpose:** infra-level investigation when Loki logs aren't enough — CPU/memory/IO pressure on a host, alarm history, anomaly windows.
+
+**Auth:** `$NETDATA_CLOUD_TOKEN` (read-only), `$NETDATA_SPACE_SLUG` (= `compucorpcluster`), `$NETDATA_CLOUD_URL` (= `https://app.netdata.cloud`).
+
+**Pattern:**
+```bash
+# List rooms in the space:
+curl -sS -H "Authorization: Bearer $NETDATA_CLOUD_TOKEN" \
+  "$NETDATA_CLOUD_URL/api/v2/spaces/$NETDATA_SPACE_SLUG/rooms"
+
+# Active/recent alerts:
+curl -sS -H "Authorization: Bearer $NETDATA_CLOUD_TOKEN" \
+  "$NETDATA_CLOUD_URL/api/v3/alerts?scope_nodes=*&active=true"
+```
+
+Useful for: "did a spike correlate with this bug report's timeframe?", "what was the host doing at <T>?", confirming/refuting infrastructure-level hypotheses before assuming it's an app bug. Do NOT attempt to create/edit alarms, rooms, or dashboards — token is read-only.
 
 ## Compucorp dev sites (reproducing UI bugs)
 

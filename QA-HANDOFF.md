@@ -54,19 +54,31 @@ I (the implementing agent) only tested at the unit + read-only smoke level. **No
 
 ## 3. Security checklist — validate BEFORE the first real run
 
-### 3.1 Filter sensitive env vars
+### 3.1 Credential model
 
-**ALWAYS launch via the wrapper `./start-symphony.sh`, never via `symphony` directly.** The wrapper does:
+**ALWAYS launch via the wrapper `./start-symphony.sh`, never via `symphony` directly.** The wrapper does two things relevant to credentials:
 
 ```bash
-unset SENDGRID_API_KEY JENKINS_TOKEN NETDATA_CLOUD_TOKEN
-export GH_TOKEN="$OPENCLAW_GH_TOKEN"
+export GH_TOKEN="$OPENCLAW_GH_TOKEN"   # swap operator's gh token for the bot's
+# (no env vars are `unset` — see history note below)
 exec symphony ... ./WORKFLOW.md
 ```
 
-The remaining credentials in `~/.claude/settings.json` (AWS, Cloudflare, MongoDB, RDS, Loki, Tempo, Jira — all read-only) pass through to the agent. The agent uses them for investigation. This is the **only** layer that filters env for the agent. A `before_run` hook in `WORKFLOW.md` **does NOT work** for this purpose — confirmed by reading the fork source: the hook runs in an isolated `sh -lc` subshell (`workspace.ex:179-180`), and the Claude CLI is spawned via `Port.open :spawn_executable` with no `env:` arg (`coding_agent.ex:148-159`), inheriting the BEAM parent's env instead. If you accidentally invoke `symphony ./WORKFLOW.md` directly, the agent gets the operator's full env including `SENDGRID_API_KEY`, `JENKINS_TOKEN`, etc.
+**All credentials in `~/.claude/settings.json` pass through to the agent.** Scope is enforced at the upstream service, not by the wrapper:
 
-**Validate that filtering took effect** once a session is running:
+| Credential | Upstream scope | Verification command (run anytime) |
+|---|---|---|
+| `SENDGRID_API_KEY` | Read-only (Mail Activity, settings.read, etc. — 64 scopes, all `.read`) | `curl -sH "Authorization: Bearer $SENDGRID_API_KEY" https://api.sendgrid.com/v3/scopes \| jq '.scopes \| map(select(endswith(".read") \| not) \| select(test("read|eligible|2fa_required") \| not))'` should return `[]` |
+| `SENDGRID_BILLING_API_KEY` | Read-only (`billing.read` only) | Same scopes endpoint with the billing key |
+| `JENKINS_TOKEN` (user: `openclawautomation`) | Restricted role `compucorp*openclaw_automation` (operator-confirmed read-scoped; not API-verifiable without a write probe) | `curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" "$JENKINS_URL/whoAmI/api/json"` shows the role |
+| `NETDATA_CLOUD_TOKEN` | Viewer on `compucorpcluster` space (operator-confirmed; the API exposes `permissions: []` on space membership which suggests viewer but is not definitive) | `curl -sH "Authorization: Bearer $NETDATA_CLOUD_TOKEN" "$NETDATA_CLOUD_URL/api/v2/spaces"` |
+| Loki, Tempo, AWS, Cloudflare, MongoDB, RDS | All read-only at upstream | See `prompts/TOOLS.md` for canonical patterns |
+
+**WORKFLOW.md invariant #5** ("no production side effects outside the PR") remains as a second-line, prompt-level defense. The agent is instructed never to attempt write operations even if it has the token. The audit (`./analyze-run.sh <KEY>`) detects all external `curl` calls in the run so you can spot anomalies.
+
+**History note (commits up through `fd476fe`, May 2026):** Earlier the wrapper `unset` four env vars (`SENDGRID_API_KEY`, `SENDGRID_BILLING_API_KEY`, `JENKINS_TOKEN`, `NETDATA_CLOUD_TOKEN`) as belt-and-suspenders. The operator confirmed these tokens are scoped read-only at the upstream service, and the wrapper-side `unset` was removed so the agent can investigate email-delivery, build-status, and infra-metric questions without needing a human handoff. If QA runs against a Symphony build older than `fd476fe`, the legacy unset behavior still applies and absence of these vars is expected.
+
+**Smoke-test the agent's env** once a session is running (verifies the wrapper loaded `~/.claude/settings.json` correctly):
 
 ```bash
 # Find the claude (symphony-claude) PID:
@@ -74,17 +86,18 @@ ps -ef | grep -E 'symphony-claude|claude --' | grep -v grep
 
 # Inspect that process's env (replace <pid>):
 ps eww -p <pid> | tr ' ' '\n' | grep -E 'SENDGRID|JENKINS_TOKEN|NETDATA_CLOUD|GH_TOKEN'
-# Expected:
-#   GH_TOKEN=github_pat_...    (the OPENCLAW token; not your personal gh token)
-#   (no SENDGRID_API_KEY)
-#   (no JENKINS_TOKEN)
-#   (no NETDATA_CLOUD_TOKEN)
+# Expected (post-fd476fe):
+#   GH_TOKEN=github_pat_...                  (the OPENCLAW token; not your personal gh token)
+#   SENDGRID_API_KEY=SG....                   (read-only)
+#   SENDGRID_BILLING_API_KEY=SG....           (read-only)
+#   JENKINS_TOKEN=...                         (restricted)
+#   NETDATA_CLOUD_TOKEN=...                   (read-only)
 
 # Equivalent via /proc on Linux (if not on macOS):
 # tr '\0' '\n' < /proc/<pid>/environ | grep -E 'SENDGRID|...'
 ```
 
-If `SENDGRID_API_KEY` is present in the agent's env, the wrapper was bypassed — `kill -TERM` the symphony process and restart via `./start-symphony.sh`.
+If `GH_TOKEN` is missing or matches your personal `gh auth token` (not the bot's), the wrapper failed to swap identity — `kill -TERM` the symphony process and restart via `./start-symphony.sh`.
 
 ### 3.2 GitHub identity — `openclawautomation`
 

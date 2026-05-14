@@ -18,19 +18,25 @@
 #                         (lives in ~/.claude/settings.json env block)
 #   JIRA_URL, JIRA_USER, JIRA_TOKEN — Jira credentials (same source)
 #
-# Filtered out (so the agent cannot use them):
-#   SENDGRID_API_KEY         — agent doesn't need email; would let it send
-#   SENDGRID_BILLING_API_KEY — SendGrid's billing-scoped key (same risk as above)
-#   JENKINS_TOKEN            — mostly read, but can trigger builds — keep out of reach
-#   NETDATA_CLOUD_TOKEN      — agent uses Loki for logs; would be write to Netdata space
-#
-# Available to the agent (read-only credentials inherited from ~/.claude/settings.json):
-#   LOKI_*                            — logs (read)
+# Available to the agent (inherited from ~/.claude/settings.json; scope on
+# each token is the protection — operator confirmed credentials are
+# scoped read-only or otherwise restricted at the upstream service):
+#   LOKI_*                            — logs (read; prod stacks need per-query approval per CLAUDE.md)
 #   TEMPO_TOKEN                       — traces (read)
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY — read-only IAM
 #   CLOUDFLARE_API_TOKEN              — read-only
 #   MONGO_* (host/user/password/etc)  — read-only access to compucorp.sites etc.
 #   RDS_* (CIVIPLUS/DEV/STAGING)      — read-only; jump hosts via SSH for tunnel
+#   SENDGRID_API_KEY                  — read-only (Mail Activity)
+#   SENDGRID_BILLING_API_KEY          — read-only (billing/plan info)
+#   JENKINS_URL, JENKINS_USER, JENKINS_TOKEN — restricted scope (build status read)
+#   NETDATA_CLOUD_TOKEN, NETDATA_SPACE_SLUG, NETDATA_CLOUD_URL — read-only
+#   DEV_SITE_URL/BASIC_USER/BASIC_PASS — Traefik Basic Auth for dev sites
+#
+# WORKFLOW.md invariant #5 still applies as PROMPT-level guard: the agent
+# must not mandate Jenkins builds, send email, post to external services,
+# etc. — that's intent, not capability. Capability is constrained by the
+# upstream-scoped tokens; the prompt invariant is belt-and-suspenders.
 #
 
 set -euo pipefail
@@ -114,11 +120,16 @@ export GIT_AUTHOR_EMAIL="260519389+openclawautomation@users.noreply.github.com"
 export GIT_COMMITTER_NAME="openclawautomation"
 export GIT_COMMITTER_EMAIL="260519389+openclawautomation@users.noreply.github.com"
 
-# --- Strip credentials the agent must not use in Phase 1 ------------------
-unset SENDGRID_API_KEY          # email send
-unset SENDGRID_BILLING_API_KEY  # SendGrid billing API (separate key, also "send" scope)
-unset JENKINS_TOKEN             # deploys / builds
-unset NETDATA_CLOUD_TOKEN       # netdata writes
+# --- Credential scope is enforced at the upstream service ----------------
+# Earlier versions of this wrapper `unset` SENDGRID_API_KEY,
+# SENDGRID_BILLING_API_KEY, JENKINS_TOKEN, NETDATA_CLOUD_TOKEN as a belt
+# layer against accidental side effects. Operator confirmed the tokens
+# stored in ~/.claude/settings.json are themselves scoped read-only (or
+# tightly restricted, for Jenkins), so the agent inherits them now and
+# can investigate email-delivery, build-status, and metric-alarm
+# questions without an out-of-band human credential handoff. The prompt
+# invariant in WORKFLOW.md (#5: "no production side effects outside the
+# PR") remains as a second line of defense at the intent layer.
 
 # --- Pick the local build, not the Homebrew binary ------------------------
 # The Homebrew `symphony` was compiled from the upstream sapsaldog source and
@@ -139,7 +150,7 @@ if [ ! -x "$SYMPHONY_BIN" ]; then
 fi
 
 # Sanity logging (does not echo any token values).
-echo "[start-symphony] env filtered. GH_TOKEN=openclaw-bot, sensitive vars unset."
+echo "[start-symphony] env loaded. GH_TOKEN=openclaw-bot. Observability creds (SendGrid/Jenkins/Netdata/Loki/Tempo/Cloudflare/Mongo/RDS/AWS) inherited; scope enforced upstream."
 echo "[start-symphony] WORKFLOW=$WORKFLOW"
 echo "[start-symphony] binary=$SYMPHONY_BIN (local build, NOT Homebrew)"
 echo "[start-symphony] wrapper-cwd=$(pwd) (agent's actual cwd will be ~/symphony_workspaces/<KEY>/ per workspace)"
