@@ -134,6 +134,22 @@ defmodule SymphonyElixir.Orchestrator do
                 delay_type: :continuation
               })
 
+            {:shutdown, {:workspace_inflight, workspace}} ->
+              # Preflight refused: another run is still active in this
+              # workspace (or it was just killed and not yet stale). Do NOT
+              # retry — that would loop forever every poll. Treat as
+              # completed for tracking purposes; a human or the next stall
+              # threshold expiry will let the ticket re-dispatch.
+              Logger.info("Workspace inflight for issue_id=#{issue_id}; skipping retry. workspace=#{workspace}")
+              complete_issue(state, issue_id)
+
+            {:shutdown, {:workspace_orphan_branch, workspace, branch}} ->
+              # Preflight refused: an `agent/*-fix` branch with unpushed
+              # commits exists. Cleaning would lose work. Halt without
+              # retry; operator must inspect/recover/clean manually.
+              Logger.warning("Orphan agent branch for issue_id=#{issue_id}; skipping retry. workspace=#{workspace} branch=#{branch}. Operator: recover or delete the workspace before re-applying agent:todo.")
+              complete_issue(state, issue_id)
+
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 

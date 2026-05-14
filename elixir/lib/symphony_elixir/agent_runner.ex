@@ -10,6 +10,26 @@ defmodule SymphonyElixir.AgentRunner do
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     Logger.info("Starting agent run for #{issue_context(issue)}")
 
+    # Workspace preflight (Phase A): refuse if a previous run still has the
+    # workspace dirty AND was active within agent_stall_timeout_ms, or if
+    # we'd erase an orphan agent/*-fix branch with unpushed commits. These
+    # exit via `{:shutdown, _}` so the orchestrator's DOWN handler can
+    # distinguish "declined safely" from "crashed" and skip the retry loop.
+    case Workspace.preflight_check(issue) do
+      {:refuse, :inflight, workspace} ->
+        Logger.warning("Workspace inflight for #{issue_context(issue)}; refusing dispatch. workspace=#{workspace}")
+        exit({:shutdown, {:workspace_inflight, workspace}})
+
+      {:refuse, :orphan_branch, workspace, branch} ->
+        Logger.warning("Orphan agent branch detected for #{issue_context(issue)}; refusing dispatch. workspace=#{workspace} branch=#{branch}")
+        exit({:shutdown, {:workspace_orphan_branch, workspace, branch}})
+
+      decision when decision in [:proceed_create, :proceed_clean] ->
+        do_run(issue, codex_update_recipient, opts)
+    end
+  end
+
+  defp do_run(issue, codex_update_recipient, opts) do
     case Workspace.create_for_issue(issue) do
       {:ok, workspace} ->
         try do

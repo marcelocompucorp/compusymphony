@@ -8,6 +8,156 @@ defmodule SymphonyElixir.Workspace do
 
   @excluded_entries MapSet.new([".elixir_ls", "tmp"])
 
+  @type preflight_decision ::
+          :proceed_create
+          | :proceed_clean
+          | {:refuse, :inflight, Path.t()}
+          | {:refuse, :orphan_branch, Path.t(), String.t()}
+
+  @doc """
+  Inspect the on-disk workspace state for an issue BEFORE dispatching the
+  agent, and decide whether it's safe to proceed.
+
+  This guards against two real failure modes the original `create_for_issue`
+  couldn't see:
+
+  1. **In-flight or just-killed run**: another agent (or the same one after
+     a Symphony crash) has the workspace in active use. Cleaning would race;
+     proceeding would corrupt. Returns `{:refuse, :inflight, _}`.
+  2. **Orphan branch**: a previous run pushed commits to a local
+     `agent/*-fix` branch but never published an upstream (or the upstream
+     was deleted). Cleaning silently loses the diff. Returns
+     `{:refuse, :orphan_branch, _, branch_name}` so the operator can recover
+     the branch before we delete the workspace.
+
+  All other states (no workspace, half-created workspace, clean .git that's
+  in sync with origin, dirty tree older than the agent-stall threshold)
+  return `:proceed_create` or `:proceed_clean` — callers should remove the
+  workspace and recreate it as usual.
+
+  The "in-flight" mtime threshold matches `Config.agent_stall_timeout_ms/0`
+  so this and the orchestrator agree on what "active" means.
+  """
+  @spec preflight_check(map() | String.t() | nil) :: preflight_decision()
+  def preflight_check(issue_or_identifier) do
+    issue_context = issue_context(issue_or_identifier)
+    safe_id = safe_identifier(issue_context.issue_identifier)
+    workspace = workspace_path_for_issue(safe_id)
+    do_preflight_check(workspace)
+  end
+
+  defp do_preflight_check(workspace) do
+    repo_dir = Path.join(workspace, "repo")
+    git_dir = Path.join(repo_dir, ".git")
+
+    cond do
+      not File.dir?(workspace) ->
+        :proceed_create
+
+      not File.dir?(repo_dir) ->
+        :proceed_clean
+
+      not File.exists?(git_dir) ->
+        :proceed_clean
+
+      true ->
+        classify_git_state(workspace, repo_dir)
+    end
+  end
+
+  defp classify_git_state(workspace, repo_dir) do
+    dirty? = git_dirty?(repo_dir)
+    ahead? = git_commits_ahead?(repo_dir)
+    has_upstream? = git_has_upstream?(repo_dir)
+    agent_branch = git_orphan_agent_branch(repo_dir)
+    recent? = workspace_recently_touched?(repo_dir)
+
+    cond do
+      # 1. Agent branch exists but has no upstream — cleaning would lose commits.
+      # This is independent of mtime; even old orphan branches are operator data.
+      agent_branch != nil and not has_upstream? ->
+        {:refuse, :orphan_branch, workspace, agent_branch}
+
+      # 2. Live agent run (or just-killed): refuse to touch.
+      (dirty? or ahead?) and recent? ->
+        {:refuse, :inflight, workspace}
+
+      # 3. Everything else is safe to clean and re-create:
+      #    - dirty tree older than the stall threshold (abandoned run)
+      #    - clean tree with no commits ahead (PR merged, branch gone)
+      #    - clean tree, no upstream tracking, no agent branch (PR merged + delete-on-merge)
+      true ->
+        :proceed_clean
+    end
+  end
+
+  defp git_dirty?(repo_dir) do
+    case System.cmd("git", ["-C", repo_dir, "status", "--porcelain"], stderr_to_stdout: true) do
+      {output, 0} -> String.trim(output) != ""
+      _ -> false
+    end
+  end
+
+  defp git_commits_ahead?(repo_dir) do
+    case System.cmd("git", ["-C", repo_dir, "rev-list", "--count", "@{u}..HEAD"], stderr_to_stdout: true) do
+      {output, 0} ->
+        case Integer.parse(String.trim(output)) do
+          {n, _} when n > 0 -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp git_has_upstream?(repo_dir) do
+    case System.cmd("git", ["-C", repo_dir, "rev-parse", "--abbrev-ref", "@{u}"], stderr_to_stdout: true) do
+      {_output, 0} -> true
+      _ -> false
+    end
+  end
+
+  # Look for any local branch matching `agent/*-fix` that has commits not
+  # reachable from any remote ref. If any such branch exists, treat it as
+  # an orphan (operator might want to recover before we wipe).
+  defp git_orphan_agent_branch(repo_dir) do
+    with {branches_output, 0} <-
+           System.cmd("git", ["-C", repo_dir, "for-each-ref", "--format=%(refname:short)", "refs/heads/agent/"], stderr_to_stdout: true) do
+      branches_output
+      |> String.split("\n", trim: true)
+      |> Enum.find(fn branch -> branch_has_unpublished_commits?(repo_dir, branch) end)
+    else
+      _ -> nil
+    end
+  end
+
+  defp branch_has_unpublished_commits?(repo_dir, branch) do
+    case System.cmd("git", ["-C", repo_dir, "rev-list", "--count", branch, "--not", "--remotes"], stderr_to_stdout: true) do
+      {output, 0} ->
+        case Integer.parse(String.trim(output)) do
+          {n, _} when n > 0 -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp workspace_recently_touched?(repo_dir) do
+    stall_ms = Config.agent_stall_timeout_ms()
+
+    case File.stat(repo_dir, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} ->
+        age_ms = (System.os_time(:second) - mtime) * 1_000
+        age_ms < stall_ms
+
+      _ ->
+        false
+    end
+  end
+
   @spec create_for_issue(map() | String.t() | nil) :: {:ok, Path.t()} | {:error, term()}
   def create_for_issue(issue_or_identifier) do
     issue_context = issue_context(issue_or_identifier)

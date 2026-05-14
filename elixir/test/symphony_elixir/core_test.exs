@@ -1606,4 +1606,112 @@ defmodule SymphonyElixir.CoreTest do
       File.rm_rf(test_root)
     end
   end
+
+  describe "Workspace.preflight_check/1" do
+    setup do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "symphony-preflight-#{System.unique_integer([:positive])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      on_exit(fn -> File.rm_rf(test_root) end)
+      {:ok, test_root: test_root, workspace_root: workspace_root}
+    end
+
+    test "missing workspace dir -> :proceed_create", %{} do
+      assert Workspace.preflight_check("PROOF-001") == :proceed_create
+    end
+
+    test "workspace exists but no repo/ subdir -> :proceed_clean", %{workspace_root: root} do
+      File.mkdir_p!(Path.join(root, "PROOF-002"))
+      assert Workspace.preflight_check("PROOF-002") == :proceed_clean
+    end
+
+    test "repo/ exists but no .git -> :proceed_clean", %{workspace_root: root} do
+      File.mkdir_p!(Path.join([root, "PROOF-003", "repo"]))
+      assert Workspace.preflight_check("PROOF-003") == :proceed_clean
+    end
+
+    test "clean tree, no upstream tracking, no agent branch -> :proceed_clean", %{workspace_root: root} do
+      repo = Path.join([root, "PROOF-004", "repo"])
+      init_clean_repo(repo)
+      assert Workspace.preflight_check("PROOF-004") == :proceed_clean
+    end
+
+    test "dirty tree, fresh mtime -> {:refuse, :inflight, _}", %{workspace_root: root} do
+      repo = Path.join([root, "PROOF-005", "repo"])
+      init_clean_repo(repo)
+      File.write!(Path.join(repo, "scratch.txt"), "dirty change")
+      # mtime is "now" by default
+
+      assert {:refuse, :inflight, workspace} = Workspace.preflight_check("PROOF-005")
+      assert workspace == Path.join(root, "PROOF-005")
+    end
+
+    test "dirty tree, mtime older than stall threshold -> :proceed_clean", %{workspace_root: root} do
+      repo = Path.join([root, "PROOF-006", "repo"])
+      init_clean_repo(repo)
+      File.write!(Path.join(repo, "scratch.txt"), "old dirty change")
+
+      # backdate mtime well past Config.agent_stall_timeout_ms (default 5 min)
+      stall_seconds = div(Config.agent_stall_timeout_ms(), 1_000)
+      backdate_seconds = stall_seconds + 120
+      System.cmd("touch", ["-t", touch_timestamp(backdate_seconds), repo])
+
+      assert Workspace.preflight_check("PROOF-006") == :proceed_clean
+    end
+
+    test "orphan agent branch with unpublished commits -> {:refuse, :orphan_branch, _, _}", %{workspace_root: root} do
+      repo = Path.join([root, "PROOF-007", "repo"])
+      init_clean_repo(repo)
+
+      # Build a local agent/PROOF-007-fix branch with one commit. No remote
+      # exists, so the commit is purely local and would be lost on clean.
+      System.cmd("git", ["-C", repo, "checkout", "-b", "agent/PROOF-007-fix"])
+      File.write!(Path.join(repo, "fix.txt"), "fix content")
+      System.cmd("git", ["-C", repo, "add", "fix.txt"])
+      System.cmd("git", ["-C", repo, "commit", "-m", "PROOF-007: fix"])
+
+      assert {:refuse, :orphan_branch, workspace, branch} = Workspace.preflight_check("PROOF-007")
+      assert workspace == Path.join(root, "PROOF-007")
+      assert branch == "agent/PROOF-007-fix"
+    end
+
+    test "clean tree with upstream tracking, no commits ahead -> :proceed_clean", %{workspace_root: root} do
+      repo = Path.join([root, "PROOF-008", "repo"])
+      remote = Path.join([root, "PROOF-008", "remote.git"])
+      init_clean_repo(repo)
+
+      # Make remote and push, then set upstream — simulates "PR merged, branch in sync"
+      System.cmd("git", ["-C", repo, "init", "--bare", remote])
+      System.cmd("git", ["-C", repo, "remote", "add", "origin", remote])
+      System.cmd("git", ["-C", repo, "push", "-u", "origin", "main"])
+
+      assert Workspace.preflight_check("PROOF-008") == :proceed_clean
+    end
+  end
+
+  defp init_clean_repo(repo_dir) do
+    File.mkdir_p!(repo_dir)
+    System.cmd("git", ["-C", repo_dir, "init", "-b", "main"])
+    System.cmd("git", ["-C", repo_dir, "config", "user.name", "Test User"])
+    System.cmd("git", ["-C", repo_dir, "config", "user.email", "test@example.com"])
+    File.write!(Path.join(repo_dir, "README.md"), "# test")
+    System.cmd("git", ["-C", repo_dir, "add", "README.md"])
+    System.cmd("git", ["-C", repo_dir, "commit", "-m", "initial"])
+    :ok
+  end
+
+  defp touch_timestamp(seconds_ago) do
+    # macOS BSD touch -t expects [[CC]YY]MMDDhhmm[.SS]
+    seconds = System.os_time(:second) - seconds_ago
+    seconds
+    |> DateTime.from_unix!()
+    |> Calendar.strftime("%Y%m%d%H%M.%S")
+  end
 end
