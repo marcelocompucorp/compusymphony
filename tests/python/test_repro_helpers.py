@@ -323,3 +323,131 @@ class _FakeNavCtx:
         return self
     def __exit__(self, *args):
         return False  # don't suppress
+
+
+class TestLifecycleTestUser:
+    def test_create_and_cleanup_via_admin_uri(self):
+        """Enter creates via /admin/people/create, exit cancels via /user/<uid>/cancel."""
+        events = []
+
+        class FakePage:
+            def __init__(self):
+                self._url = "https://x.cc-staging.site/"
+                self._after_create = False
+            def goto(self, url, **kwargs):
+                events.append(("goto", url))
+                if "/admin/people/create" in url:
+                    self._url = url
+                elif "/admin/people?user=" in url:
+                    # After successful create, the URL changes to /user/<uid>/edit
+                    if self._after_create:
+                        self._url = "https://x.cc-staging.site/user/118/edit"
+                    else:
+                        self._url = url
+                elif "/cancel" in url:
+                    self._url = url
+            def fill(self, sel, val):
+                events.append(("fill", sel, val))
+            def click(self, sel, **kwargs):
+                events.append(("click", sel))
+                if "edit-submit" in sel and not self._after_create:
+                    self._after_create = True
+                    self._url = "https://x.cc-staging.site/user/118/edit"
+            def expect_navigation(self, **kwargs):
+                return _FakeNavCtx()
+            def locator(self, selector):
+                if "input[name='user_cancel_method']" in selector:
+                    return _FakeRadio(events)
+                if "tr:has-text" in selector:
+                    return _FakeRow(events, edit_href="/user/118/edit?destination=...")
+                return _FakeLocator(events)
+            def wait_for_load_state(self, state, **kwargs):
+                pass
+            @property
+            def url(self):
+                return self._url
+
+        admin = FakePage()
+        with rh.lifecycle_test_user(admin, "symphony-test-abc",
+                                     "pwd", "test@compuco.invalid") as username:
+            assert username == "symphony-test-abc"
+
+        gotos = [e[1] for e in events if e[0] == "goto"]
+        assert any("/admin/people/create" in g for g in gotos)
+        assert any("/cancel" in g for g in gotos)
+        # The cancel-method radio should be checked with force=True
+        radio_events = [e for e in events if e[0] == "radio_check"]
+        assert ("radio_check", "force") in radio_events
+
+    def test_cleanup_runs_on_exception(self):
+        """If the with-block raises, cleanup still happens."""
+        events = []
+        class FakePage:
+            def __init__(self):
+                self._url = ""
+                self._created = False
+            def goto(self, url, **kwargs):
+                events.append(("goto", url))
+                if "/admin/people/create" in url:
+                    self._url = url
+                if "/cancel" in url:
+                    self._url = url
+            def fill(self, sel, val):
+                pass
+            def click(self, sel, **kwargs):
+                if "edit-submit" in sel and not self._created:
+                    self._created = True
+                    self._url = "https://x.cc-staging.site/user/118/edit"
+            def expect_navigation(self, **kwargs):
+                return _FakeNavCtx()
+            def locator(self, selector):
+                if "input[name='user_cancel_method']" in selector:
+                    return _FakeRadio(events)
+                return _FakeLocator(events)
+            def wait_for_load_state(self, state, **kwargs):
+                pass
+            @property
+            def url(self):
+                return self._url
+
+        with pytest.raises(ValueError, match="boom"):
+            with rh.lifecycle_test_user(FakePage(), "symphony-test-xyz", "p", "x@y.z"):
+                raise ValueError("boom")
+
+        gotos = [e[1] for e in events if e[0] == "goto"]
+        assert any("/cancel" in g for g in gotos), \
+            f"cleanup should have navigated to /cancel; got {gotos}"
+
+
+class _FakeRadio:
+    def __init__(self, events):
+        self._events = events
+    def count(self):
+        return 1
+    def check(self, force=False):
+        self._events.append(("radio_check", "force" if force else "soft"))
+
+
+class _FakeRow:
+    def __init__(self, events, edit_href):
+        self._events = events
+        self._edit_href = edit_href
+    @property
+    def first(self):
+        return self
+    def count(self):
+        return 1
+    def locator(self, selector):
+        return _FakeAnchor(self._edit_href)
+
+
+class _FakeAnchor:
+    def __init__(self, href):
+        self._href = href
+    @property
+    def first(self):
+        return self
+    def get_attribute(self, name):
+        if name == "href":
+            return self._href
+        return None

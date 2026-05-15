@@ -287,3 +287,133 @@ def _drive_ssp_two_step(page, form, username, password):
     except Exception:
         # Sometimes the submit is AJAX too — fall back to load-state wait
         page.wait_for_load_state("networkidle", timeout=DEFAULT_TIMEOUT_MS // 2)
+
+
+# --- Test user lifecycle ---
+
+class UserExistsError(Exception):
+    """Raised when creating a test user that already exists."""
+
+
+class CreateUserError(Exception):
+    """Raised when /admin/people/create submit fails for any other reason."""
+
+
+_UID_FROM_URL_RE = re.compile(r"/user/(\d+)/edit")
+
+
+def create_test_user(admin_page: "Page", *, username: str, email: str,
+                     password: str) -> int:
+    """Create a non-admin test user via /admin/people/create.
+
+    Returns the new user's uid (extracted from the redirect URL).
+    Raises UserExistsError if the username is already taken,
+    CreateUserError on other failures.
+    """
+    site_root = admin_page.url.rsplit("/admin", 1)[0] if "/admin" in admin_page.url \
+                else admin_page.url.rstrip("/")
+    admin_page.goto(f"{site_root}/admin/people/create",
+                    wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
+
+    admin_page.fill("input#edit-name", username)
+    admin_page.fill("input#edit-mail", email)
+    admin_page.fill("input#edit-pass-pass1", password)
+    admin_page.fill("input#edit-pass-pass2", password)
+    # Don't check any non-default role (authenticated user is implicit).
+    # Don't tick "Notify user of new account" — no email delivery.
+
+    try:
+        with admin_page.expect_navigation(wait_until="networkidle",
+                                          timeout=DEFAULT_TIMEOUT_MS):
+            admin_page.click("input#edit-submit")
+    except Exception:
+        # Some Drupal builds don't navigate (AJAX submit); fall back
+        admin_page.wait_for_load_state("networkidle", timeout=DEFAULT_TIMEOUT_MS)
+
+    # Check the redirected URL for the new uid
+    m = _UID_FROM_URL_RE.search(admin_page.url)
+    if m:
+        return int(m.group(1))
+
+    # No uid in URL — scrape error messages
+    error_text = ""
+    try:
+        error_text = admin_page.locator(".messages--error, .messages.error") \
+                               .inner_text(timeout=2000)
+    except Exception:
+        pass
+    if any(s in error_text.lower() for s in ("already taken", "already registered")):
+        raise UserExistsError(f"user {username!r} exists: {error_text}")
+    raise CreateUserError(f"failed to create user {username!r}: {error_text!r} url={admin_page.url}")
+
+
+def find_uid_by_username(admin_page: "Page", username: str) -> int | None:
+    """Look up a uid by username via /admin/people?user=<username>.
+
+    Returns None if not found. Used by cleanup when create_test_user partially
+    failed (created but uid wasn't captured).
+    """
+    site_root = admin_page.url.rsplit("/admin", 1)[0] if "/admin" in admin_page.url \
+                else admin_page.url.rstrip("/")
+    admin_page.goto(f"{site_root}/admin/people?user={username}",
+                    wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
+    row = admin_page.locator(f"tr:has-text('{username}')").first
+    if row.count() == 0:
+        return None
+    href = row.locator("a[href*='/user/']").first.get_attribute("href") or ""
+    m = _UID_FROM_URL_RE.search(href)
+    return int(m.group(1)) if m else None
+
+
+def cancel_test_user_by_uid(admin_page: "Page", uid: int) -> None:
+    """Cancel a test user via /user/<uid>/cancel + user_cancel_delete.
+
+    Idempotent: logs and returns if the user is already gone.
+    Uses force=True on the cancel-method radio because Drupal's label
+    intercepts pointer events.
+    """
+    site_root = admin_page.url.rsplit("/admin", 1)[0] if "/admin" in admin_page.url \
+                else admin_page.url.rstrip("/")
+    admin_page.goto(f"{site_root}/user/{uid}/cancel",
+                    wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
+
+    radio = admin_page.locator(
+        "input[name='user_cancel_method'][value='user_cancel_delete']"
+    )
+    if radio.count() == 0:
+        return  # already gone
+
+    radio.check(force=True)
+    try:
+        with admin_page.expect_navigation(wait_until="networkidle",
+                                          timeout=DEFAULT_TIMEOUT_MS):
+            admin_page.click("input[name='op'][value='Cancel account']")
+    except Exception:
+        admin_page.wait_for_load_state("networkidle", timeout=DEFAULT_TIMEOUT_MS)
+
+
+@contextmanager
+def lifecycle_test_user(admin_page: "Page", username: str, password: str,
+                        email: str):
+    """Context manager: create test user on enter, cancel on exit.
+
+    Yields the username. Cleanup runs on normal exit AND on raised exceptions.
+    Cleanup does NOT run on SIGKILL / hard crashes; deferred sweeper handles those.
+
+    Username convention: `symphony-test-<random-hex6>` to avoid collision.
+    """
+    uid = create_test_user(admin_page, username=username, email=email,
+                           password=password)
+    try:
+        yield username
+    finally:
+        try:
+            cancel_test_user_by_uid(admin_page, uid)
+        except Exception:
+            # Best-effort cleanup. If it fails, find_uid_by_username can recover.
+            try:
+                recovered = find_uid_by_username(admin_page, username)
+                if recovered:
+                    cancel_test_user_by_uid(admin_page, recovered)
+            except Exception:
+                pass  # logged via Symphony transcript; sweeper handles eventually
