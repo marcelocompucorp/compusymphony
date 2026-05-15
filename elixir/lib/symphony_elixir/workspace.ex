@@ -54,7 +54,10 @@ defmodule SymphonyElixir.Workspace do
 
     cond do
       File.exists?(done_file) ->
-        content = File.read!(done_file) |> String.trim()
+        content = case File.read(done_file) do
+          {:ok, data} -> String.trim(data)
+          {:error, _} -> "unknown"
+        end
         {:refuse, :already_done, workspace, content}
 
       not File.dir?(workspace) ->
