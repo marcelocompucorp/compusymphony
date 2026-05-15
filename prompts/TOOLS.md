@@ -231,6 +231,59 @@ curl -sS -u "$DEV_SITE_BASIC_USER:$DEV_SITE_BASIC_PASS" -b "$COOKIE_JAR" \
 
 **Limitation:** if the agent doesn't have basic auth env vars, it must investigate via code reading alone. The agent should NOT decrypt VAULT values from Mongo — that's not in scope for Phase 1.
 
+## sysPass (Compucorp self-hosted password manager)
+
+**Purpose:** retrieve Drupal admin + Traefik Basic Auth credentials for staging sites, needed by the visual-repro skill (`prompts/visual-repro.md`).
+
+**Endpoint:** `$SYSPASS_URL/api.php` — JSON-RPC 2.0.
+
+**Auth:** sysPass uses per-action API tokens. The agent has two:
+- `$SYSPASS_TOKEN_SEARCH` + `$SYSPASS_PASS_SEARCH` — authorized for `account/search`
+- `$SYSPASS_TOKEN_VIEWPASS` + `$SYSPASS_PASS_VIEWPASS` — authorized for `account/viewPass`
+
+All four env vars live in `~/.claude/settings.json` and are auto-forwarded by `start-symphony.sh`'s generic env-load (lines 67–83). Do NOT log them.
+
+**Two-step credential lookup pattern:**
+
+```python
+# Step 1: account/search by site URL or name
+search_response = {
+  "jsonrpc": "2.0",
+  "method": "account/search",
+  "params": {
+    "authToken": $SYSPASS_TOKEN_SEARCH,
+    "tokenPass": $SYSPASS_PASS_SEARCH,
+    "text": "ies2.cc-staging.site",   # search by hostname
+  },
+  "id": 1
+}
+# Returns: list of accounts with {id, login, url, name, ...}
+# Multiple accounts per site are typical (Drupal admin + Basic HTTP Auth + DB + ...).
+# Filter by `name` field to disambiguate: "Drupal" → admin login; "Basic HTTP Auth" → Traefik gate.
+
+# Step 2: account/viewPass with the filtered id
+viewpass_response = {
+  "jsonrpc": "2.0",
+  "method": "account/viewPass",
+  "params": {
+    "authToken": $SYSPASS_TOKEN_VIEWPASS,
+    "tokenPass": $SYSPASS_PASS_VIEWPASS,
+    "id": <filtered_account_id>,
+  },
+  "id": 1
+}
+# Returns: {"result": {"result": {"password": "<plain>"}}}
+```
+
+**Account naming convention observed (2026-05-15):**
+- `Basic HTTP Auth` — Traefik gateway credentials (login is usually a single token like `ies`)
+- `Drupal` — Drupal admin user (login is usually `compucorp_admin`)
+- One pair per site, one pair per environment (staging / data / etc.)
+
+**PII redaction:** passwords are production-equivalent secrets. Never include in Jira comments, PR bodies, logs, or transcripts.
+
+**Helper:** `prompts/repro_helpers.get_syspass_cred(account_search, prefer_name=)` wraps the two-step flow.
+
 ## Workspace conventions
 
 - Working directory is `~/symphony_workspaces/<JIRA-KEY>/`. The target repo is cloned into `./repo/`.
