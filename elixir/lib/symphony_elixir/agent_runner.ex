@@ -102,32 +102,58 @@ defmodule SymphonyElixir.AgentRunner do
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      # AGENT_DONE per-turn short-circuit: if the agent wrote the sentinel
+      # during this turn, do NOT continue dispatching further turns regardless
+      # of Jira state. The sentinel is the agent's explicit "I'm done"
+      # signal — Jira state can lag (e.g. dry-run runs intentionally leave
+      # `agent:todo` on, so `continue_with_issue?` would otherwise keep
+      # continuing until max_turns).
+      cond do
+        File.exists?(Path.join(workspace, "AGENT_DONE")) ->
+          Logger.info("AGENT_DONE present after turn #{turn_number}/#{max_turns} for #{issue_context(issue)}; stopping turn loop")
+          :ok
 
-          do_run_codex_turns(
+        true ->
+          continue_or_stop_turn(
             app_session,
             workspace,
-            refreshed_issue,
+            issue,
             codex_update_recipient,
             opts,
             issue_state_fetcher,
-            turn_number + 1,
+            turn_number,
             max_turns
           )
-
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-
-          :ok
-
-        {:done, _refreshed_issue} ->
-          :ok
-
-        {:error, reason} ->
-          {:error, reason}
       end
+    end
+  end
+
+  defp continue_or_stop_turn(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    case continue_with_issue?(issue, issue_state_fetcher) do
+      {:continue, refreshed_issue} when turn_number < max_turns ->
+        Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+        do_run_codex_turns(
+          app_session,
+          workspace,
+          refreshed_issue,
+          codex_update_recipient,
+          opts,
+          issue_state_fetcher,
+          turn_number + 1,
+          max_turns
+        )
+
+      {:continue, refreshed_issue} ->
+        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+
+        :ok
+
+      {:done, _refreshed_issue} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

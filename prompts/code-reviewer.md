@@ -148,7 +148,10 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
 
 1. **First function call** in `repro.py` (after imports + module-level constant assignments like `SITE = "..."`) is `assert_staging_host(SITE)`. **BLOCKER** if absent.
 2. **`assert_bug_reproduced(page)`** is defined as a function AND is called immediately before any `page.screenshot(path="before.png", ...)` call. **BLOCKER** if missing, undefined, or called after the screenshot.
-3. **Cleanup of any test user created via `lifecycle_test_user`** happens via the context manager (its `__exit__` is guaranteed on normal exceptions) OR via an explicit `finally:` block. **BLOCKER** if neither.
+3. **Test-user cleanup** is unconditionally guaranteed for any user created in `repro.py`:
+   - **PREFERRED:** use `with lifecycle_test_user(admin_page, ...)` — the context manager guarantees `cancel_test_user_by_uid` runs on `__exit__` (including on raised exceptions).
+   - **Acceptable but riskier:** a hand-rolled `try: ... finally:` block where the `finally:` clause **must** call `cancel_test_user_by_uid(admin_page, uid)` (or `find_uid_by_username` + `cancel_test_user_by_uid` as a recovery). A `finally:` block that closes the browser but does NOT cancel the test user is **NOT** sufficient.
+   - **BLOCKER** if `create_test_user` is called (directly or via `lifecycle_test_user`) but cleanup is missing, conditional, or only closes the browser without cancelling the user. Orphan test users on staging compound across runs.
 
 The reviewer uses the existing JSON output schema; new findings have `file="repro.py"`.
 
