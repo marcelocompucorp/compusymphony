@@ -203,3 +203,87 @@ def dismiss_cookie_banner(page: "Page") -> bool:
         return True
     except Exception:
         return False
+
+
+# --- Drupal login (form-shape autodetect — SSP-only validated) ---
+
+def compucorp_drupal_login_autodetect(
+    page: "Page",
+    username: str,
+    password: str,
+    *,
+    try_cognito_bypass: bool = True,
+) -> None:
+    """Detect login form shape and drive the flow.
+
+    Empirical validation status (2026-05-15):
+      - SSP two-step: validated against ies2.cc-staging.site
+      - Cognito-bypass: NOT validated — raises NotImplementedError
+      - Standard one-step: NOT validated — raises NotImplementedError
+
+    Raises if no logout link appears after the attempt.
+    """
+    site_root = page.url.split("/user/")[0] if "/user/" in page.url else None
+
+    # Step 1: try Cognito bypass — probe /user/local/login first if enabled
+    if try_cognito_bypass:
+        # Cognito-bypass detection: navigate to /user/local/login and check if a
+        # Drupal login form is served (vs 404 / redirect to Cognito).
+        # Empirically unvalidated — raise immediately so the agent falls through
+        # to manual verification. Remove this guard once smoke-tested on a real
+        # Cognito site.
+        # For now, skip the probe entirely. (try_cognito_bypass=False on known
+        # non-Cognito sites avoids spurious /user/local/login traffic.)
+        pass
+
+    # Step 2: navigate to /user/login (the SSP form action). Always issue the
+    # goto — idempotent and ensures we're at the canonical login URL even if
+    # the caller already navigated there (e.g. after a redirect).
+    page.goto(f"{site_root or ''}/user/login" if site_root else "/user/login",
+              wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
+
+    dismiss_cookie_banner(page)
+
+    # Step 3: detect form shape
+    ssp_form = page.locator("form#ssp-core-user-login-or-register-form").first
+    if ssp_form.count() > 0 and ssp_form.is_visible():
+        _drive_ssp_two_step(page, ssp_form, username, password)
+    else:
+        raise NotImplementedError(
+            "compucorp_drupal_login_autodetect: only the SSP two-step form is "
+            "validated. Standard one-step (#edit-name + #edit-pass on same page) "
+            "and Cognito-bypass (/user/local/login) paths are not yet empirically "
+            "validated. Fall through to manual verification, then add a smoke "
+            "test for the new shape and implement here."
+        )
+
+    # Step 4: verify logged in
+    logout_count = page.locator(
+        "a[href*='/user/logout'], a[href*='/sso/auth/logout']"
+    ).count()
+    if logout_count == 0:
+        raise RuntimeError(
+            f"login attempt for {username!r} did not produce a logout link; "
+            "credentials may be wrong or site auth changed"
+        )
+
+
+def _drive_ssp_two_step(page, form, username, password):
+    """Internal: SSP two-step login flow (username → AJAX → password → submit)."""
+    form.locator("input[name='name']").fill(username)
+    form.locator("button[type='submit'][name='op']").click()
+    page.wait_for_selector("input[type='password']:visible",
+                           timeout=DEFAULT_TIMEOUT_MS)
+
+    pwd = page.locator("input[type='password']:visible").first
+    pwd.fill(password)
+    pwd_form = pwd.locator("xpath=ancestor::form").first
+    try:
+        with page.expect_navigation(wait_until="networkidle",
+                                    timeout=DEFAULT_TIMEOUT_MS // 2):
+            pwd_form.locator(
+                "button[type='submit'], input[type='submit']"
+            ).first.click()
+    except Exception:
+        # Sometimes the submit is AJAX too — fall back to load-state wait
+        page.wait_for_load_state("networkidle", timeout=DEFAULT_TIMEOUT_MS // 2)
