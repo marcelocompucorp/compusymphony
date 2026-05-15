@@ -75,6 +75,12 @@ def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> 
     """
     base_url = os.environ["SYSPASS_URL"]
 
+    # Normalize input — accept either URL or hostname.
+    # sysPass account/search text-matches account fields; URL form (with scheme)
+    # may not match if account records store bare hostname. Strip scheme defensively.
+    parsed = urlparse(account_search)
+    search_text = parsed.hostname or account_search
+
     # Step 1: search
     search_body = {
         "jsonrpc": "2.0",
@@ -82,7 +88,7 @@ def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> 
         "params": {
             "authToken": os.environ["SYSPASS_TOKEN_SEARCH"],
             "tokenPass": os.environ["SYSPASS_PASS_SEARCH"],
-            "text": account_search,
+            "text": search_text,
         },
         "id": 1,
     }

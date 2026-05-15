@@ -123,6 +123,32 @@ class TestGetSyspassCred:
         with pytest.raises(_r.HTTPError):
             rh.get_syspass_cred("anything")
 
+    def test_normalizes_url_to_hostname_for_search(self, syspass_env, monkeypatch):
+        """get_syspass_cred should pass hostname (not URL) to sysPass account/search."""
+        search_texts = []
+        def fake_post(url, json, timeout):
+            search_texts.append(json["params"].get("text"))
+            if json["method"] == "account/search":
+                return _FakeResponse({"result": {"result": [
+                    {"id": 1, "name": "Drupal", "login": "admin",
+                     "url": "https://x.cc-staging.site"},
+                ]}})
+            return _FakeResponse({"result": {"result": {"password": "p"}}})
+        monkeypatch.setattr(rh.requests, "post", fake_post)
+
+        # URL form should be normalized to hostname
+        rh.get_syspass_cred("https://x.cc-staging.site", prefer_name="Drupal")
+        # Only the search call uses text param (viewPass uses id)
+        search_text_calls = [t for t in search_texts if t]
+        assert search_text_calls == ["x.cc-staging.site"], \
+            f"expected hostname; got {search_text_calls!r}"
+
+        # Bare hostname should pass through unchanged
+        search_texts.clear()
+        rh.get_syspass_cred("x.cc-staging.site", prefer_name="Drupal")
+        search_text_calls = [t for t in search_texts if t]
+        assert search_text_calls == ["x.cc-staging.site"]
+
 
 class TestBasicAuthContext:
     def test_passes_credentials_and_viewport(self, syspass_env, monkeypatch):

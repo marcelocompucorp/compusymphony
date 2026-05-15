@@ -287,7 +287,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     10a. Read `prompts/visual-repro.md`.
     10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo/`).
     10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`.
-    10d. Run: `python3 <workspace>/repro.py`. Outputs `<workspace>/before.png` on success.
+    10d. Run: `cd <workspace> && python3 repro.py`. Outputs `<workspace>/before.png` on success. (The `cd` is required because `page.screenshot(path="before.png")` is cwd-relative.)
     10e. If exit 0 AND `before.png` exists: PR `## Before` reads:
          > "Reproduction completed; programmatic assertion fired. Screenshot at `~/symphony_workspaces/{{ issue.identifier }}/before.png` on the Symphony host. Re-run via `python3 ~/symphony_workspaces/{{ issue.identifier }}/repro.py`."
 
