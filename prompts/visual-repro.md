@@ -226,11 +226,31 @@ If the script:
 
 → Write `## Manual verification required` in the PR body with explicit reproduction steps (URL, browser-state preconditions, what to look for). **Do NOT commit a `before.png`** from a script that didn't pass `assert_bug_reproduced`. The audit trail remains via Symphony's per-session JSONL transcript.
 
-## 7. File locations and PR embedding (v1)
+## 7. File locations and PR embedding (v1.5)
 
-- `repro.py` lives at `<workspace>/repro.py` (workspace root, NOT inside `./repo/`).
-- `before.png` lives at `<workspace>/before.png`.
-- Neither file is committed to the client repo in v1.
-- PR `## Before` section (when reproduction succeeded):
-  > Reproduction completed; programmatic assertion fired. Screenshot at `~/symphony_workspaces/<KEY>/before.png` on the Symphony host. Re-run via `python3 ~/symphony_workspaces/<KEY>/repro.py`.
-- Direct PR-body image embedding is deferred to v2.
+**Generation locations (during script run):**
+- `repro.py` is written at `<workspace>/repro.py` (workspace root, NOT inside `./repo/`).
+- `before.png` is written by the script at `<workspace>/before.png`.
+
+**Post-success: commit into the client repo on the agent branch.** After `assert_bug_reproduced` fires and `before.png` is captured, copy both files into `<workspace>/repo/.agent-artifacts/<TICKET>/` and commit them as a SEPARATE commit (not mixed with the fix):
+
+```bash
+cd <workspace>/repo
+mkdir -p .agent-artifacts/<TICKET>/
+cp ../repro.py .agent-artifacts/<TICKET>/repro.py
+cp ../before.png .agent-artifacts/<TICKET>/before.png
+git add .agent-artifacts/<TICKET>/
+git commit -m "<TICKET>: add visual reproduction evidence"
+```
+
+**PR `## Before` section (when reproduction succeeded):** use markdown image syntax with the agent-branch raw URL:
+
+```markdown
+![Before — <one-line bug summary>](https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png)
+
+Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/<TICKET>/repro.py`](https://github.com/<owner>/<repo>/blob/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/repro.py) — re-runnable from a fresh checkout via `python3 .agent-artifacts/<TICKET>/repro.py` (requires `SYSPASS_*` env + Playwright + chromium).
+```
+
+**Failure → no artifact commit.** If the script raises, the assertion fails, or `assert_staging_host` refuses, do NOT commit `before.png` (even if one was captured pre-assertion — see §3's stale-output guard + ordering rule). The artifact commit is gated on `assert_bug_reproduced` passing.
+
+**Artifact lifecycle:** the branch raw URL works during PR review. After PR merge + branch deletion, the URL stops resolving but the artifacts permanently land in master via the merge (~1MB per UI ticket). Accepted trade-off for v1.5 — alternatives (gist, side branch, GitHub user-attachments) are higher-friction.

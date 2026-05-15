@@ -144,7 +144,7 @@ If you receive `prior_findings` (from `review-result-r<N-1>.json`):
 
 ## Visual-repro invariants (when workspace contains `repro.py`)
 
-If the agent invoked the visual-repro skill, the workspace will contain `<workspace>/repro.py` (and on success `<workspace>/before.png`). Additionally check:
+If the agent invoked the visual-repro skill, the workspace will contain `<workspace>/repro.py` (and on success `<workspace>/before.png`). On a successful reproduction the same files are ALSO committed into the client repo at `.agent-artifacts/<TICKET>/`. Additionally check:
 
 1. **First function call** in `repro.py` (after imports + module-level constant assignments like `SITE = "..."`) is `assert_staging_host(SITE)`. **BLOCKER** if absent.
 2. **`assert_bug_reproduced(page)`** is defined as a function AND is called immediately before any `page.screenshot(path="before.png", ...)` call. **BLOCKER** if missing, undefined, or called after the screenshot.
@@ -152,6 +152,12 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
    - **PREFERRED:** use `with lifecycle_test_user(admin_page, ...)` — the context manager guarantees `cancel_test_user_by_uid` runs on `__exit__` (including on raised exceptions).
    - **Acceptable but riskier:** a hand-rolled `try: ... finally:` block where the `finally:` clause **must** call `cancel_test_user_by_uid(admin_page, uid)` (or `find_uid_by_username` + `cancel_test_user_by_uid` as a recovery). A `finally:` block that closes the browser but does NOT cancel the test user is **NOT** sufficient.
    - **BLOCKER** if `create_test_user` is called (directly or via `lifecycle_test_user`) but cleanup is missing, conditional, or only closes the browser without cancelling the user. Orphan test users on staging compound across runs.
+
+4. **Artifact commit pattern** (when reproduction succeeded — `before.png` exists in workspace):
+   - The branch must include a separate commit that adds `.agent-artifacts/<TICKET>/repro.py` AND `.agent-artifacts/<TICKET>/before.png` to the client repo, with commit message `<TICKET>: add visual reproduction evidence`.
+   - The commit must be **separate** from the fix commit — they have different audiences (fix = reviewer judgement; artifacts = reviewer evidence).
+   - PR `## Before` section must contain a markdown image referencing the artifact at the agent-branch raw URL (`https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png`).
+   - **BLOCKER** if `before.png` exists in workspace but the artifact commit is missing, OR if the commit mixes artifacts with fix code, OR if PR `## Before` doesn't reference the committed image.
 
 The reviewer uses the existing JSON output schema; new findings have `file="repro.py"`.
 

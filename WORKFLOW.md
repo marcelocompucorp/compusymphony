@@ -288,11 +288,28 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo/`).
     10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`.
     10d. Run: `cd <workspace> && python3 repro.py`. Outputs `<workspace>/before.png` on success. (The `cd` is required because `page.screenshot(path="before.png")` is cwd-relative.)
-    10e. If exit 0 AND `before.png` exists: PR `## Before` reads:
-         > "Reproduction completed; programmatic assertion fired. Screenshot at `~/symphony_workspaces/{{ issue.identifier }}/before.png` on the Symphony host. Re-run via `python3 ~/symphony_workspaces/{{ issue.identifier }}/repro.py`."
+    10e. If exit 0 AND `before.png` exists: copy both `repro.py` and `before.png` into the client repo on the agent branch:
 
-         Else: PR body gets `## Manual verification required` with explicit reproduction steps (URL, preconditions, what to look for).
-    10f. Neither `repro.py` nor `before.png` is committed to the client repo in v1 — audit trail lives in workspace + Symphony's JSONL transcript.
+    ```bash
+    cd <workspace>/repo
+    mkdir -p .agent-artifacts/{{ issue.identifier }}/
+    cp ../repro.py .agent-artifacts/{{ issue.identifier }}/repro.py
+    cp ../before.png .agent-artifacts/{{ issue.identifier }}/before.png
+    git add .agent-artifacts/{{ issue.identifier }}/
+    git commit -m "{{ issue.identifier }}: add visual reproduction evidence"
+    ```
+
+    Then PR `## Before` reads (use markdown image syntax with the agent-branch raw URL — `<owner>/<repo>` from step 3):
+
+    ```markdown
+    ![Before — session-limit bug reproduced](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/before.png)
+
+    Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/{{ issue.identifier }}/repro.py`](https://github.com/<owner>/<repo>/blob/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/repro.py) — re-runnable via `python3 .agent-artifacts/{{ issue.identifier }}/repro.py` from a fresh checkout (requires `SYSPASS_*` env + Playwright).
+    ```
+
+    If exit non-zero OR `before.png` missing: PR body gets `## Manual verification required` with explicit reproduction steps (URL, preconditions, what to look for).
+
+    10f. **Artifact lifecycle note (operator-facing):** the artifacts land in master after PR merge (~1MB per UI ticket). The branch-name raw URL works during PR review and breaks after branch deletion; the artifacts remain in master's git history at the merge commit indefinitely. This is intentional for v1.5 — the alternatives (gist, side branch, GitHub user-attachments API) are higher-friction. v2 may revisit.
 
 11. **Commit and push.** Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`.
 
