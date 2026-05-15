@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+import requests  # type: ignore
+
 if TYPE_CHECKING:
     from playwright.sync_api import Browser, BrowserContext, Page
 
@@ -53,8 +55,6 @@ def assert_staging_host(url: str) -> None:
 
 # --- Credentials (sysPass) ---
 
-import requests  # type: ignore  # imported here to keep module-level imports thin
-
 
 def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> dict:
     """Fetch a Compucorp sysPass credential via the two-step search→viewPass flow.
@@ -65,8 +65,8 @@ def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> 
     Two-step flow:
       1. account/search with text=<account_search>, auth via SYSPASS_TOKEN_SEARCH
          + SYSPASS_PASS_SEARCH.
-      2. If prefer_name is set, filter results case-insensitively on the `name`
-         field.
+      2. If prefer_name is set, filter results by case-insensitive equality on
+         the `name` field.
       3. Raise ValueError if zero matches or if matches > 1 after filter.
       4. account/viewPass with the resolved id, auth via SYSPASS_TOKEN_VIEWPASS
          + SYSPASS_PASS_VIEWPASS.
@@ -88,12 +88,15 @@ def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> 
     }
     r = requests.post(f"{base_url}/api.php", json=search_body, timeout=15)
     r.raise_for_status()
-    accounts = r.json()["result"]["result"]
+    body = r.json()
+    if body.get("error"):
+        raise RuntimeError(f"sysPass API error: {body['error']}")
+    accounts = body["result"]["result"]
 
-    # Step 2: filter by prefer_name (case-insensitive substring)
+    # Step 2: filter by prefer_name (case-insensitive equality)
     if prefer_name:
         pn = prefer_name.lower()
-        accounts = [a for a in accounts if pn in (a.get("name") or "").lower()]
+        accounts = [a for a in accounts if (a.get("name") or "").lower() == pn]
 
     if not accounts:
         raise ValueError(
@@ -120,7 +123,10 @@ def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> 
     }
     r = requests.post(f"{base_url}/api.php", json=viewpass_body, timeout=15)
     r.raise_for_status()
-    password = r.json()["result"]["result"]["password"]
+    body = r.json()
+    if body.get("error"):
+        raise RuntimeError(f"sysPass API error: {body['error']}")
+    password = body["result"]["result"]["password"]
 
     return {
         "id": acc["id"],

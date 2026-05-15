@@ -6,6 +6,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prompts"))
 
 import pytest
+import requests
+
 import repro_helpers as rh
 
 
@@ -97,6 +99,29 @@ class TestGetSyspassCred:
         monkeypatch.setattr(rh.requests, "post", fake_post)
         cred = rh.get_syspass_cred("x", prefer_name="drupal")  # lowercase
         assert cred["id"] == 6278
+
+    def test_raises_on_syspass_error_envelope(self, syspass_env, monkeypatch):
+        """sysPass returns {'error': {...}} on auth fail / not-found."""
+        def fake_post(url, json, timeout):
+            return _FakeResponse({"error": {"code": -32100, "message": "Account not found"}})
+        monkeypatch.setattr(rh.requests, "post", fake_post)
+        with pytest.raises(RuntimeError, match="sysPass API error"):
+            rh.get_syspass_cred("anything")
+
+    def test_raises_on_http_error(self, syspass_env, monkeypatch):
+        """requests.raise_for_status surfaces HTTP failures."""
+        class _Boom:
+            def raise_for_status(self):
+                raise requests.HTTPError("500 Server Error")
+            def json(self):
+                return {}
+        # Need to import requests at module level for HTTPError
+        import requests as _r
+        def fake_post(url, json, timeout):
+            return _Boom()
+        monkeypatch.setattr(rh.requests, "post", fake_post)
+        with pytest.raises(_r.HTTPError):
+            rh.get_syspass_cred("anything")
 
 
 class _FakeResponse:
