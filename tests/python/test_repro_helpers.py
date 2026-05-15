@@ -380,6 +380,146 @@ class TestLifecycleTestUser:
         radio_events = [e for e in events if e[0] == "radio_check"]
         assert ("radio_check", "force") in radio_events
 
+    def test_create_resolves_uid_via_lookup_when_form_stays(self):
+        """Drupal 7 shape 2: post-submit stays on /admin/people/create with a
+        success status message; uid must be resolved via /admin/people lookup.
+        Regression for ies2.cc-staging.site behavior (2026-05-15).
+        """
+        events = []
+
+        class FakeStatusLocator:
+            def __init__(self, text):
+                self._text = text
+            def count(self):
+                return 1
+            @property
+            def first(self):
+                return self
+            def inner_text(self, **kwargs):
+                return self._text
+
+        class FakeEmptyLocator:
+            def count(self):
+                return 0
+            @property
+            def first(self):
+                return self
+            def inner_text(self, **kwargs):
+                return ""
+
+        class FakeRow:
+            def count(self):
+                return 1
+            @property
+            def first(self):
+                return self
+            def locator(self, sel):
+                # /user/<uid>/edit-style href
+                class _A:
+                    @property
+                    def first(self):
+                        return self
+                    def get_attribute(self, name):
+                        return "/user/199/edit?destination=/admin/people"
+                return _A()
+
+        class FakePage:
+            def __init__(self):
+                self._url = "https://x.cc-staging.site/admin/people/create"
+                self._post_submit = False
+            def goto(self, url, **kwargs):
+                events.append(("goto", url))
+                # URL never changes from /admin/people/create on submit;
+                # only changes when find_uid_by_username navigates to /admin/people
+                if "/admin/people?user=" in url:
+                    self._url = url
+            def fill(self, sel, val):
+                events.append(("fill", sel, val))
+            def click(self, sel, **kwargs):
+                events.append(("click", sel))
+                self._post_submit = True
+                # URL stays on the create form — shape 2
+            def expect_navigation(self, **kwargs):
+                return _FakeNavCtx()
+            def wait_for_load_state(self, *args, **kwargs):
+                pass
+            def locator(self, selector):
+                if ".messages--error" in selector or ".messages.error" in selector:
+                    return FakeEmptyLocator()
+                if ".messages--status" in selector or ".messages.status" in selector:
+                    if self._post_submit:
+                        return FakeStatusLocator(
+                            "Status message\nCreated a new user account for "
+                            "symphony-test-zzz. No e-mail has been sent."
+                        )
+                    return FakeEmptyLocator()
+                if "tr:has-text" in selector:
+                    return FakeRow()
+                return FakeEmptyLocator()
+            @property
+            def url(self):
+                return self._url
+
+        page = FakePage()
+        uid = rh.create_test_user(page, username="symphony-test-zzz",
+                                  email="x@y.invalid", password="pw")
+        assert uid == 199
+        # Confirm the lookup navigation happened
+        assert any("/admin/people?user=symphony-test-zzz" in e[1]
+                   for e in events if e[0] == "goto")
+
+    def test_create_raises_on_error_message(self):
+        """If the create form re-renders with a `.messages.error` block,
+        create_test_user must raise (UserExistsError when text says 'already
+        taken', CreateUserError otherwise) — and MUST NOT fall through to the
+        success/lookup branch.
+        """
+        class FakeErrorLocator:
+            def __init__(self, text):
+                self._text = text
+            def count(self):
+                return 1
+            @property
+            def first(self):
+                return self
+            def inner_text(self, **kwargs):
+                return self._text
+
+        class FakePage:
+            def __init__(self, error):
+                self._url = "https://x.cc-staging.site/admin/people/create"
+                self._error = error
+            def goto(self, url, **kwargs):
+                pass
+            def fill(self, *a, **k):
+                pass
+            def click(self, *a, **k):
+                pass
+            def expect_navigation(self, **kwargs):
+                return _FakeNavCtx()
+            def wait_for_load_state(self, *args, **kwargs):
+                pass
+            def locator(self, selector):
+                if ".messages--error" in selector or ".messages.error" in selector:
+                    return FakeErrorLocator(self._error)
+                # Anything else (status, row) shouldn't be queried, but be safe:
+                class _Empty:
+                    def count(self): return 0
+                    @property
+                    def first(self): return self
+                    def inner_text(self, **kwargs): return ""
+                return _Empty()
+            @property
+            def url(self):
+                return self._url
+
+        with pytest.raises(rh.UserExistsError):
+            rh.create_test_user(FakePage("The name foo is already taken."),
+                                username="foo", email="x@y.z", password="pw")
+        with pytest.raises(rh.CreateUserError):
+            rh.create_test_user(FakePage("E-mail address is invalid."),
+                                username="bar", email="x@y.z", password="pw")
+
     def test_cleanup_runs_on_exception(self):
         """If the with-block raises, cleanup still happens."""
         events = []

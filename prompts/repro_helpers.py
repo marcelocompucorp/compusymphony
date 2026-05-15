@@ -319,7 +319,14 @@ def create_test_user(admin_page: "Page", *, username: str, email: str,
                      password: str) -> int:
     """Create a non-admin test user via /admin/people/create.
 
-    Returns the new user's uid (extracted from the redirect URL).
+    Returns the new user's uid.
+
+    On success, Drupal 7's user-add form either redirects to /user/<uid>/edit
+    (older themes) or stays on /admin/people/create and renders a status
+    message ("Created a new user account for X."). Both shapes are handled:
+      - URL match: uid parsed from /user/<uid>/edit.
+      - Status-message match: uid resolved via /admin/people lookup.
+
     Raises UserExistsError if the username is already taken,
     CreateUserError on other failures.
     """
@@ -342,21 +349,52 @@ def create_test_user(admin_page: "Page", *, username: str, email: str,
         # Some Drupal builds don't navigate (AJAX submit); fall back
         admin_page.wait_for_load_state("networkidle", timeout=DEFAULT_TIMEOUT_MS)
 
-    # Check the redirected URL for the new uid
+    # Shape 1: redirected to /user/<uid>/edit — pull uid straight from URL.
     m = _UID_FROM_URL_RE.search(admin_page.url)
     if m:
         return int(m.group(1))
 
-    # No uid in URL — scrape error messages
+    # Shape 2: stayed on the create form (or landed somewhere else). Check for
+    # an error message first — if Drupal rejected the submission, the create
+    # form re-renders with a `.messages.error` block; we should NOT then try
+    # to look the user up (it doesn't exist).
     error_text = ""
     try:
-        error_text = admin_page.locator(".messages--error, .messages.error") \
-                               .inner_text(timeout=2000)
+        if admin_page.locator(".messages--error, .messages.error").count() > 0:
+            error_text = admin_page.locator(".messages--error, .messages.error") \
+                                   .first.inner_text(timeout=2000)
     except Exception:
         pass
-    if any(s in error_text.lower() for s in ("already taken", "already registered")):
-        raise UserExistsError(f"user {username!r} exists: {error_text}")
-    raise CreateUserError(f"failed to create user {username!r}: {error_text!r} url={admin_page.url}")
+    if error_text:
+        if any(s in error_text.lower() for s in ("already taken", "already registered")):
+            raise UserExistsError(f"user {username!r} exists: {error_text}")
+        raise CreateUserError(
+            f"failed to create user {username!r}: {error_text!r} url={admin_page.url}"
+        )
+
+    # Shape 2 continued: no error → look for the success status message and
+    # resolve the uid via the admin/people listing.
+    status_text = ""
+    try:
+        if admin_page.locator(".messages--status, .messages.status").count() > 0:
+            status_text = admin_page.locator(".messages--status, .messages.status") \
+                                    .first.inner_text(timeout=2000)
+    except Exception:
+        pass
+    # Drupal 7 success: "Created a new user account for <username>."
+    if "created a new user account" in status_text.lower():
+        uid = find_uid_by_username(admin_page, username)
+        if uid is not None:
+            return uid
+        raise CreateUserError(
+            f"create succeeded (status={status_text!r}) but uid lookup for "
+            f"{username!r} returned None"
+        )
+
+    raise CreateUserError(
+        f"failed to create user {username!r}: no success/error message; "
+        f"url={admin_page.url} status_text={status_text!r}"
+    )
 
 
 def find_uid_by_username(admin_page: "Page", username: str) -> int | None:
