@@ -418,6 +418,17 @@ class TestLifecycleTestUser:
         assert any("/cancel" in g for g in gotos), \
             f"cleanup should have navigated to /cancel; got {gotos}"
 
+    def test_site_root_handles_url_with_path(self):
+        """site_root must strip path/query — handles post-create URL /user/118/edit."""
+        assert rh._site_root("https://x.cc-staging.site/admin/people/create") \
+               == "https://x.cc-staging.site"
+        assert rh._site_root("https://x.cc-staging.site/user/118/edit") \
+               == "https://x.cc-staging.site"
+        assert rh._site_root("https://x.cc-staging.site/admin/people?user=foo") \
+               == "https://x.cc-staging.site"
+        assert rh._site_root("https://x.cc-staging.site/") \
+               == "https://x.cc-staging.site"
+
 
 class _FakeRadio:
     def __init__(self, events):

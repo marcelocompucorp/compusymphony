@@ -302,6 +302,12 @@ class CreateUserError(Exception):
 _UID_FROM_URL_RE = re.compile(r"/user/(\d+)/edit")
 
 
+def _site_root(url: str) -> str:
+    """Extract scheme://host from a URL, stripping any path/query/fragment."""
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}" if p.scheme and p.netloc else url.rstrip("/")
+
+
 def create_test_user(admin_page: "Page", *, username: str, email: str,
                      password: str) -> int:
     """Create a non-admin test user via /admin/people/create.
@@ -310,8 +316,7 @@ def create_test_user(admin_page: "Page", *, username: str, email: str,
     Raises UserExistsError if the username is already taken,
     CreateUserError on other failures.
     """
-    site_root = admin_page.url.rsplit("/admin", 1)[0] if "/admin" in admin_page.url \
-                else admin_page.url.rstrip("/")
+    site_root = _site_root(admin_page.url)
     admin_page.goto(f"{site_root}/admin/people/create",
                     wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
 
@@ -353,8 +358,7 @@ def find_uid_by_username(admin_page: "Page", username: str) -> int | None:
     Returns None if not found. Used by cleanup when create_test_user partially
     failed (created but uid wasn't captured).
     """
-    site_root = admin_page.url.rsplit("/admin", 1)[0] if "/admin" in admin_page.url \
-                else admin_page.url.rstrip("/")
+    site_root = _site_root(admin_page.url)
     admin_page.goto(f"{site_root}/admin/people?user={username}",
                     wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
     row = admin_page.locator(f"tr:has-text('{username}')").first
@@ -372,8 +376,7 @@ def cancel_test_user_by_uid(admin_page: "Page", uid: int) -> None:
     Uses force=True on the cancel-method radio because Drupal's label
     intercepts pointer events.
     """
-    site_root = admin_page.url.rsplit("/admin", 1)[0] if "/admin" in admin_page.url \
-                else admin_page.url.rstrip("/")
+    site_root = _site_root(admin_page.url)
     admin_page.goto(f"{site_root}/user/{uid}/cancel",
                     wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
 
