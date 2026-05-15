@@ -97,6 +97,7 @@ These override defaults; treat them as hard rules.
    - `compucorp/ase` (default branch: `master`) — Compucorp-owned client repo, this IS the source.
    - `compucorp/compuclient` (default branch: `7.x-7.x` — major-version branch, not `master`) — Compucorp-owned profile, this IS the source.
    - `compucorp/invoicehelper` (default branch: `master`) — **⚠️ currently a read-only mirror of `lab.civicrm.org/extensions/invoicehelper`**. Do NOT open PRs here; see routine step 3a for what to do when an allowlisted repo turns out to be a mirror.
+   - `compucorp/ies` — Compucorp-owned client site (IES2). Determine the default branch at runtime via `gh api repos/compucorp/ies --jq .default_branch`.
 
    If the ticket does not clearly map to a repo on this list, **stop**, post a Jira comment explaining what's needed to determine the target repo, and exit. Real Compucorp bugs often span multiple repos (extension + client + Compuclient core); when in doubt, ask via comment rather than guess.
 
@@ -104,7 +105,7 @@ These override defaults; treat them as hard rules.
 
 2. **Commit message prefix.** Always start commit messages with `{{ issue.identifier }}: <imperative description>`. Apply the rest of the commit conventions from `dev-ai-playbooks/.ai/shared-development-guide.md` §5 (under 72 chars, present tense, no AI co-author lines, no `Co-Authored-By:` trailer).
 
-3. **Branch name.** `agent/{{ issue.identifier }}-fix`. Branch from the repo's **default branch** (determine at runtime via `gh api repos/<owner>/<repo> --jq .default_branch` — do NOT assume `main`). For `compucorp/ase` it's `master`; for `compucorp/compuclient` it's the current major-version branch (e.g. `7.x-7.x`). Open the PR against the same default branch.
+3. **Branch name.** `agent/{{ issue.identifier }}-fix`. Branch from `BASE_COMMIT` as resolved in Routine step 3b — this equals the default branch tip when the deployed site is current, or an older commit when the site is behind. Always open the PR **against the repo default branch** regardless of where you branched from. Determine the default branch at runtime via `gh api repos/<owner>/<repo> --jq .default_branch` — do NOT assume `main`. For `compucorp/ase` it's `master`; for `compucorp/compuclient` it's the current major-version branch (e.g. `7.x-7.x`).
 
 4. **PR body — follow the Compucorp template, NOT an invented one.** The canonical PR template lives at `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` and is documented in `shared-development-guide.md` §3. Use **exactly** these sections, in this order:
    - `## Overview` — non-technical, 1-2 sentences describing what changed for an end user.
@@ -160,7 +161,26 @@ For investigation methodology (evidence → hypothesis → cross-correlation), `
 
 For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the short index.
 
+## DRY-RUN OVERRIDE
+
+**Activation condition:** This block applies ONLY when `{{ issue.labels }}` contains `agent:dry-run`. If the current ticket does NOT have that label, skip this entire section and follow the normal Routine.
+
+When active, this is a **dry-run** for end-to-end validation. Execute the Routine normally **through step 12a (reviewer subagent)**, then **STOP**. Specifically:
+
+- Do steps 1–11 fully (investigate, plan, implement, commit locally).
+- Do step 12a (dispatch the reviewer subagent and save `review-result-r<N>.json`) — we want to validate the reviewer path works.
+- **Do NOT run `gh pr create`** (skip 12c entirely). No PR is to be opened.
+- **Do NOT post the PR-link comment on Jira** (skip step 13).
+- **Do NOT remove the `agent:todo` label** (skip step 14) — leave it on so the operator knows this was a test.
+- Leave the local branch + commits in the workspace `./repo/` for human inspection.
+- At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>..HEAD`), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
+- Write `<workspace>/AGENT_DONE` with content: `dry-run <ISO-8601-timestamp> {{ issue.identifier }}`
+
+Invariants 1–11 still apply in full. The only thing being skipped is the external side-effect emission.
+
 ## Routine
+
+0. **Sentinel check (belt-and-suspenders).** If `<workspace>/AGENT_DONE` already exists, output one line: "Run already completed (`<content of AGENT_DONE>`). Exiting." and stop immediately without reading the ticket or doing anything else. The orchestrator-level preflight should have prevented this dispatch; this step guards the rare race where the file was written between the preflight check and this turn starting.
 
 1. **Read the Jira ticket fully.** Description + **all** comments, via the Atlassian MCP. Identify the symptom, affected site/service if any, the time window if mentioned.
 
@@ -209,6 +229,40 @@ For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the shor
 
    (d) **If the repo IS the active source:** continue to step 4.
 
+3b. **Identify the deployed git ref and branch from it, not from `master`/the repo default branch (mandatory).** The repo's default branch reflects ongoing development; the **affected site is running a specific tag/commit** that may be behind, ahead, or on a divergent patch branch. Investigating, reproducing, and patching against the wrong ref produces fixes that target lines that don't exist on the live site, or "re-fix" bugs already fixed upstream-of-deploy.
+
+   Steps:
+
+   (a) **Identify the affected site hostname.** Look for a URL like `<sitename>.cc-staging.site`, `*.civiplus.net`, or a custom domain in the ticket description, comments, or screenshot alt-text. If no URL is named:
+   - Query Mongo by repo: `db.sites.find({reporitory: /<repo-name>/i}, {_id: 1, swarm_cluster: 1})` (note the canonical typo `reporitory`). Use the repo name from step 3 as the search term.
+   - If exactly one site matches, use it and note the inference in `## Comments`.
+   - If multiple sites match (e.g. staging + live + data), ask via Jira comment listing them and STOP.
+   - If zero match, ask via Jira comment and STOP.
+
+   (b) **Query Mongo for the deployed Docker image tag.** Projection: `db.sites.find_one({"_id": "<hostname>"}, {"images": 1})`. The `images.php` field is authoritative (it ships the application code). Extract the ref as the portion after the last `:`, e.g. `compucorp/ies_php:7.x-4.4-patch.1--3rc5` → ref `7.x-4.4-patch.1--3rc5`.
+
+   Guard: if the `images.php` value has no `:`, or the tag portion is `latest` or empty, the deploy pipeline didn't embed a git ref — post a Jira comment quoting the raw `images.php` value and STOP. A human must identify the correct ref before the agent can safely patch.
+
+   (c) **Resolve the ref to a commit.** Do this after cloning the repo (step 5) so the tags are available:
+
+   ```bash
+   # Ensure full history — guards against shallow clones
+   git fetch --unshallow --tags 2>/dev/null || git fetch --all --tags --quiet
+   REF="7.x-4.4-patch.1--3rc5"  # from Mongo
+   BASE_COMMIT=$(git rev-parse "${REF}^{commit}" 2>/dev/null)  # ^{commit} unwraps annotated tags
+   DEFAULT=$(gh api "repos/<owner>/<repo>" --jq .default_branch)
+   DEFAULT_COMMIT=$(git rev-parse "$DEFAULT")
+   ```
+
+   If `git rev-parse` fails (tag or branch not found in repo): post a Jira comment quoting the Mongo `images.php` value and the failed lookup, and STOP — the deploy pipeline may have tagged under a different name or the ref was force-deleted.
+
+   (d) **Pick the branch base:**
+   - `BASE_COMMIT == DEFAULT_COMMIT`: deployed == default branch tip. Branch from default as usual. Note in PR `## Comments`: "Confirmed deployed ref `<REF>` resolves to the same commit as `<default-branch>`."
+   - `BASE_COMMIT` is an ancestor of `DEFAULT_COMMIT` (site is behind): Branch from `BASE_COMMIT` — `git checkout -b agent/<KEY>-fix "$BASE_COMMIT"`. PR target is still the repo default. Document in `## Comments`: "Site is deployed at `<REF>`, which is N commits behind `<default-branch>`. Branched from the deployed commit; merging will require a rebase/forward-port — include `git log --oneline BASE_COMMIT..<default>` in the Jira comment so the reviewer can assess conflicts."
+   - Divergent (neither is ancestor of the other): branch from `BASE_COMMIT` and **STOP, comment on Jira** asking where the fix should land (deployed patch branch, default, or both). Include `git log --oneline BASE_COMMIT..<default> | head -20` and the reverse in the comment so the reviewer can see the divergence. This is a release-management decision, not a code decision.
+
+   (e) Throughout investigation (steps 4–10), all `git log`, `git blame`, line-number references, and code reads must use `BASE_COMMIT` as the reference point — not the default branch tip.
+
 4. **Investigate with what fits the symptom.** Loki for logs, GitHub for recent changes, Netdata/Tempo/CloudWatch as relevant. Use `prompts/TOOLS.md` for credentials and access patterns. Don't run every tool — pick by signal.
 
 5. **Clone the target repo** into `./repo/` in the workspace.
@@ -223,7 +277,7 @@ For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the shor
 
 10. **Visual verification (UI-changing PRs).** If the change touches a `.tpl`, CSS, or any rendered UI element, you cannot verify it from code alone. Add a `## Manual verification required` section to the PR body listing the specific things a human needs to check in the dev site (URL, steps, expected outcome). The reviewer is expected to validate this before merge. Do not claim "verified" without screenshots — be explicit that you didn't, and what needs checking.
 
-11. **Commit and push.** Branch `agent/{{ issue.identifier }}-fix` (created from the repo's default branch — see invariant 3). Commit message starts with `{{ issue.identifier }}:`.
+11. **Commit and push.** Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`.
 
 12. **Independent code review + open the PR (single coupled step).** This pair is intentionally NOT split — see invariant 9.
 
@@ -232,7 +286,7 @@ For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the shor
    12b. **Interpret the verdict** (loop per invariant 9):
    - `approve` → continue to 12c
    - `reject` with BLOCKERs/QUESTIONs and N < 3 → fix the BLOCKERs (revise plan + code), re-dispatch (back to 12a)
-   - `reject` and N == 3 → STOP. Post Jira comment quoting `review-result-r3.json.findings` (BLOCKERs only) and the rounds attempted. Leave `agent:todo` label ON. Exit without opening PR.
+   - `reject` and N == 3 → STOP. Post Jira comment quoting `review-result-r3.json.findings` (BLOCKERs only) and the rounds attempted. Leave `agent:todo` label ON. Write `<workspace>/AGENT_DONE` with content: `blocked-review <ISO-8601-timestamp> {{ issue.identifier }}`. Exit without opening PR.
 
    12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round. Never run `gh pr create` directly without that round having been the final action; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). Target the repo's default branch (`master` for `ase`, the current `7.x-N.x` major-version branch for `compuclient`). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
 
@@ -240,7 +294,7 @@ For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the shor
 
 14. **Remove the `agent:todo` label** from the ticket via the Atlassian MCP. This signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll. If you blocked instead of completing, leave the label on so a human can decide whether to retry; document the blocker in the Jira comment.
 
-15. **Stop.** Do not transition the Jira status yourself — leave that to the human reviewing the PR.
+15. **Write `AGENT_DONE` and stop.** Create `<workspace>/AGENT_DONE` with content: `success <ISO-8601-timestamp> {{ issue.identifier }}`. Do not transition the Jira status yourself — leave that to the human reviewing the PR.
 
 ## Blockers
 
@@ -251,4 +305,4 @@ If you hit any of these, stop and post a single Jira comment describing the bloc
 - The fix requires touching infrastructure (Jenkins, Docker Swarm, CloudFlare config) — out of scope for Phase 1.
 - The bug cannot be reproduced and there is no test that can be written for it without speculative changes.
 
-When blocked, the Jira comment should state: what's missing, why it blocks the work, and the concrete human action required to unblock.
+When blocked, the Jira comment should state: what's missing, why it blocks the work, and the concrete human action required to unblock. After posting the comment, write `<workspace>/AGENT_DONE` with content: `blocked <ISO-8601-timestamp> {{ issue.identifier }}` and exit.

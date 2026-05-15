@@ -24,6 +24,10 @@ defmodule SymphonyElixir.AgentRunner do
         Logger.warning("Orphan agent branch detected for #{issue_context(issue)}; refusing dispatch. workspace=#{workspace} branch=#{branch}")
         exit({:shutdown, {:workspace_orphan_branch, workspace, branch}})
 
+      {:refuse, :already_done, workspace, content} ->
+        Logger.info("Workspace already done for #{issue_context(issue)}; skipping dispatch. workspace=#{workspace} done=#{inspect(content)}")
+        exit({:shutdown, {:workspace_already_done, workspace, content}})
+
       decision when decision in [:proceed_create, :proceed_clean] ->
         do_run(issue, codex_update_recipient, opts)
 

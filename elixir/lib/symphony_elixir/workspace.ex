@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Workspace do
           | :proceed_clean
           | {:refuse, :inflight, Path.t()}
           | {:refuse, :orphan_branch, Path.t(), String.t()}
+          | {:refuse, :already_done, Path.t(), String.t()}
 
   @doc """
   Inspect the on-disk workspace state for an issue BEFORE dispatching the
@@ -49,8 +50,13 @@ defmodule SymphonyElixir.Workspace do
   defp do_preflight_check(workspace) do
     repo_dir = Path.join(workspace, "repo")
     git_dir = Path.join(repo_dir, ".git")
+    done_file = Path.join(workspace, "AGENT_DONE")
 
     cond do
+      File.exists?(done_file) ->
+        content = File.read!(done_file) |> String.trim()
+        {:refuse, :already_done, workspace, content}
+
       not File.dir?(workspace) ->
         :proceed_create
 
