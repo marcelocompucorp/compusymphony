@@ -174,6 +174,11 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 - **Do NOT remove the `agent:todo` label** (skip step 14) — leave it on so the operator knows this was a test.
 - Leave the local branch + commits in the workspace `./repo/` for human inspection.
 - At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>..HEAD`), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
+  - (f) Visual-repro outcome — one of:
+    - `committed-repro` (script ran, assertion fired, before.png at <workspace>/before.png)
+    - `gate-skipped` (gate condition failed; reason)
+    - `assertion-failed` (script ran but assert_bug_reproduced didn't fire)
+    - `host-not-allowlisted` (assert_staging_host refused)
 - Write `<workspace>/AGENT_DONE` with content: `dry-run <ISO-8601-timestamp> {{ issue.identifier }}`
 
 Invariants 1–11 still apply in full. The only thing being skipped is the external side-effect emission.
@@ -275,7 +280,19 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 9. **Verify with `superpowers:verification-before-completion`.** Run the tests. If the test suite requires a full Docker setup (CiviCRM `./scripts/run.sh setup`), do NOT run it locally — record `Tests not run locally — running on CI` and rely on CI green as the gate. For unit/script tests that run fast, run them and paste real output.
 
-10. **Visual verification (UI-changing PRs).** If the change touches a `.tpl`, CSS, or any rendered UI element, you cannot verify it from code alone. Add a `## Manual verification required` section to the PR body listing the specific things a human needs to check in the dev site (URL, steps, expected outcome). The reviewer is expected to validate this before merge. Do not claim "verified" without screenshots — be explicit that you didn't, and what needs checking.
+10. **Visual verification (UI-changing PRs).** Apply the three-condition gate from `prompts/visual-repro.md` § 1: (a) diff touches `*.tpl/*.scss/*.css/themes/*.theme/dist`, AND (b) a specific staging URL is resolvable from the ticket (description, comments, or via step 3b Mongo lookup), AND (c) the URL passes `assert_staging_host`. If any condition fails, document the gate decision in PR `## Comments` (one line: "Visual repro skipped: <reason>") and proceed to step 11 with `## Manual verification required` in the PR body.
+
+    When all three conditions hold:
+
+    10a. Read `prompts/visual-repro.md`.
+    10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo/`).
+    10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`.
+    10d. Run: `python3 <workspace>/repro.py`. Outputs `<workspace>/before.png` on success.
+    10e. If exit 0 AND `before.png` exists: PR `## Before` reads:
+         > "Reproduction completed; programmatic assertion fired. Screenshot at `~/symphony_workspaces/{{ issue.identifier }}/before.png` on the Symphony host. Re-run via `python3 ~/symphony_workspaces/{{ issue.identifier }}/repro.py`."
+
+         Else: PR body gets `## Manual verification required` with explicit reproduction steps (URL, preconditions, what to look for).
+    10f. Neither `repro.py` nor `before.png` is committed to the client repo in v1 — audit trail lives in workspace + Symphony's JSONL transcript.
 
 11. **Commit and push.** Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`.
 
