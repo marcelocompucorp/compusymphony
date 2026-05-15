@@ -232,6 +232,7 @@ class TestCompucorpDrupalLoginAutodetect:
                 return self._url
 
         rh.compucorp_drupal_login_autodetect(FakePage(), "user", "pass",
+                                              site="https://ies2.cc-staging.site",
                                               try_cognito_bypass=False)
 
         # Should have navigated to /user/login (no cognito bypass attempted)

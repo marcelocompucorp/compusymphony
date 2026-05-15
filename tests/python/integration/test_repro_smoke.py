@@ -65,7 +65,7 @@ def test_full_repro_with_random_suffix_username(syspass_required, tmp_path):
             admin_ctx = rh.basic_auth_context(browser, syspass_account_id=basic["id"])
             admin_page = admin_ctx.new_page()
             rh.compucorp_drupal_login_autodetect(
-                admin_page, admin["login"], admin["password"], try_cognito_bypass=False)
+                admin_page, admin["login"], admin["password"], site=SITE, try_cognito_bypass=False)
 
             with rh.lifecycle_test_user(admin_page, test_username, test_password,
                                          f"{test_username}@compuco.invalid"):
@@ -73,13 +73,13 @@ def test_full_repro_with_random_suffix_username(syspass_required, tmp_path):
                 ctx1 = rh.basic_auth_context(browser, syspass_account_id=basic["id"])
                 p1 = ctx1.new_page()
                 rh.compucorp_drupal_login_autodetect(
-                    p1, test_username, test_password, try_cognito_bypass=False)
+                    p1, test_username, test_password, site=SITE, try_cognito_bypass=False)
 
                 # Test user - session 2 (triggers session limit)
                 ctx2 = rh.basic_auth_context(browser, syspass_account_id=basic["id"])
                 p2 = ctx2.new_page()
                 rh.compucorp_drupal_login_autodetect(
-                    p2, test_username, test_password, try_cognito_bypass=False)
+                    p2, test_username, test_password, site=SITE, try_cognito_bypass=False)
 
                 assert "/session/limit" in p2.url, \
                     f"expected /session/limit; got {p2.url}"

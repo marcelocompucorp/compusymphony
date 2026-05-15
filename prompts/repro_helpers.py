@@ -212,9 +212,16 @@ def compucorp_drupal_login_autodetect(
     username: str,
     password: str,
     *,
+    site: str,
     try_cognito_bypass: bool = False,  # path not implemented yet; opt-in when ready
 ) -> None:
     """Detect login form shape and drive the flow.
+
+    The `site` parameter is the full scheme+host of the target staging site,
+    e.g. `https://ies2.cc-staging.site`. The helper navigates to `/user/login`
+    on that host. This is required (not derived from `page.url`) because a
+    freshly-created Playwright page starts at `about:blank` — there's no host
+    to derive from on the first navigation.
 
     Empirical validation status (2026-05-15):
       - SSP two-step: validated against ies2.cc-staging.site
@@ -223,7 +230,7 @@ def compucorp_drupal_login_autodetect(
 
     Raises if no logout link appears after the attempt.
     """
-    site_root = page.url.split("/user/")[0] if "/user/" in page.url else None
+    site_root = site
 
     # Step 1: try Cognito bypass — probe /user/local/login first if enabled
     if try_cognito_bypass:
@@ -239,7 +246,7 @@ def compucorp_drupal_login_autodetect(
     # Step 2: navigate to /user/login (the SSP form action). Always issue the
     # goto — idempotent and ensures we're at the canonical login URL even if
     # the caller already navigated there (e.g. after a redirect).
-    page.goto(f"{site_root or ''}/user/login" if site_root else "/user/login",
+    page.goto(f"{site_root}/user/login",
               wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
 
     dismiss_cookie_banner(page)
