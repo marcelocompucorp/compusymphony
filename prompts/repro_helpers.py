@@ -135,3 +135,71 @@ def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> 
         "url": acc.get("url"),
         "password": password,
     }
+
+
+# --- Browser setup ---
+
+
+def _syspass_viewpass_by_id(account_id: int) -> dict:
+    """Internal: bypass `account/search` and fetch a password by known id.
+
+    Useful when the script already has the id (from a previous search) and
+    wants to avoid a second search round-trip. Also overridable in tests.
+    """
+    base_url = os.environ["SYSPASS_URL"]
+    body = {
+        "jsonrpc": "2.0",
+        "method": "account/viewPass",
+        "params": {
+            "authToken": os.environ["SYSPASS_TOKEN_VIEWPASS"],
+            "tokenPass": os.environ["SYSPASS_PASS_VIEWPASS"],
+            "id": account_id,
+        },
+        "id": 1,
+    }
+    r = requests.post(f"{base_url}/api.php", json=body, timeout=15)
+    r.raise_for_status()
+    resp = r.json()
+    if resp.get("error"):
+        raise RuntimeError(f"sysPass API error: {resp['error']}")
+    return {"id": account_id, "password": resp["result"]["result"]["password"]}
+
+
+def basic_auth_context(
+    browser: "Browser",
+    *,
+    syspass_account_id: int,
+    viewport: dict | None = None,
+) -> "BrowserContext":
+    """Playwright context with Traefik Basic Auth + pinned viewport.
+
+    Looks up the Basic Auth password by sysPass account id (caller passes
+    the id from get_syspass_cred). Returns a context ready for `.new_page()`.
+
+    NOTE: `_syspass_viewpass_by_id` only fetches the password, not the login
+    field. Basic Auth username defaults to "ies" (the standard Compucorp
+    Traefik Basic Auth user). If a future site uses a different login, switch
+    callers to pass the full cred dict from `get_syspass_cred` (which does
+    include `login`) and extend this helper.
+    """
+    cred = _syspass_viewpass_by_id(syspass_account_id)
+    return browser.new_context(
+        http_credentials={"username": cred.get("login", "ies"), "password": cred["password"]},
+        viewport=viewport or DEFAULT_VIEWPORT,
+    )
+
+
+# --- UI utility ---
+
+
+def dismiss_cookie_banner(page: "Page") -> bool:
+    """Best-effort dismiss of the standard Compucorp cookie consent banner.
+
+    Returns True if a banner was found and clicked, False if not present.
+    Non-fatal either way — never raises.
+    """
+    try:
+        page.get_by_role("button", name="OK, I agree").click(timeout=2000)
+        return True
+    except Exception:
+        return False

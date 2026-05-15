@@ -124,6 +124,53 @@ class TestGetSyspassCred:
             rh.get_syspass_cred("anything")
 
 
+class TestBasicAuthContext:
+    def test_passes_credentials_and_viewport(self, syspass_env, monkeypatch):
+        """basic_auth_context calls browser.new_context with http_credentials + viewport."""
+        called = {}
+
+        class FakeBrowser:
+            def new_context(self, **kwargs):
+                called.update(kwargs)
+                class FakeCtx: pass
+                return FakeCtx()
+
+        def fake_viewpass(aid):
+            return {"id": aid, "login": "ies", "password": "basic_pass", "name": "Basic HTTP Auth", "url": "x"}
+
+        # Inject a fake viewPass by-id helper for context setup
+        monkeypatch.setattr(rh, "_syspass_viewpass_by_id", fake_viewpass)
+
+        rh.basic_auth_context(FakeBrowser(), syspass_account_id=6277)
+
+        assert called["http_credentials"] == {"username": "ies", "password": "basic_pass"}
+        assert called["viewport"] == {"width": 1440, "height": 900}
+
+
+class TestDismissCookieBanner:
+    def test_returns_true_when_dismissed(self):
+        clicks = []
+        class FakeRole:
+            def click(self, timeout=None):
+                clicks.append("clicked")
+        class FakePage:
+            def get_by_role(self, role, name=None):
+                return FakeRole()
+
+        assert rh.dismiss_cookie_banner(FakePage()) is True
+        assert clicks == ["clicked"]
+
+    def test_returns_false_when_no_banner(self):
+        class FakeRole:
+            def click(self, timeout=None):
+                raise Exception("not found")
+        class FakePage:
+            def get_by_role(self, role, name=None):
+                return FakeRole()
+
+        assert rh.dismiss_cookie_banner(FakePage()) is False
+
+
 class _FakeResponse:
     def __init__(self, data):
         self._data = data
