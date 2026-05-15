@@ -142,6 +142,18 @@ If you receive `prior_findings` (from `review-result-r<N-1>.json`):
    is a known failure mode — anchor to round N-1's call unless evidence
    demands re-evaluation.
 
+## Visual-repro invariants (when workspace contains `repro.py`)
+
+If the agent invoked the visual-repro skill, the workspace will contain `<workspace>/repro.py` (and on success `<workspace>/before.png`). Additionally check:
+
+1. **First function call** in `repro.py` (after imports + module-level constant assignments like `SITE = "..."`) is `assert_staging_host(SITE)`. **BLOCKER** if absent.
+2. **`assert_bug_reproduced(page)`** is defined as a function AND is called immediately before any `page.screenshot(path="before.png", ...)` call. **BLOCKER** if missing, undefined, or called after the screenshot.
+3. **Cleanup of any test user created via `lifecycle_test_user`** happens via the context manager (its `__exit__` is guaranteed on normal exceptions) OR via an explicit `finally:` block. **BLOCKER** if neither.
+
+The reviewer uses the existing JSON output schema; new findings have `file="repro.py"`.
+
+If `repro.py` is absent (gate didn't fire, or skill skipped), no extra checks needed — review proceeds as usual.
+
 ## Output format
 
 You MUST emit **only** valid JSON matching `prompts/code-reviewer-schema.json`.
