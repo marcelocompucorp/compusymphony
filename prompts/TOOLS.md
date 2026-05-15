@@ -246,13 +246,15 @@ All four env vars live in `~/.claude/settings.json` and are auto-forwarded by `s
 **Two-step credential lookup pattern:**
 
 ```python
+import os
+
 # Step 1: account/search by site URL or name
 search_response = {
   "jsonrpc": "2.0",
   "method": "account/search",
   "params": {
-    "authToken": $SYSPASS_TOKEN_SEARCH,
-    "tokenPass": $SYSPASS_PASS_SEARCH,
+    "authToken": os.environ["SYSPASS_TOKEN_SEARCH"],
+    "tokenPass": os.environ["SYSPASS_PASS_SEARCH"],
     "text": "ies2.cc-staging.site",   # search by hostname
   },
   "id": 1
@@ -266,8 +268,8 @@ viewpass_response = {
   "jsonrpc": "2.0",
   "method": "account/viewPass",
   "params": {
-    "authToken": $SYSPASS_TOKEN_VIEWPASS,
-    "tokenPass": $SYSPASS_PASS_VIEWPASS,
+    "authToken": os.environ["SYSPASS_TOKEN_VIEWPASS"],
+    "tokenPass": os.environ["SYSPASS_PASS_VIEWPASS"],
     "id": <filtered_account_id>,
   },
   "id": 1
@@ -282,7 +284,7 @@ viewpass_response = {
 
 **PII redaction:** passwords are production-equivalent secrets. Never include in Jira comments, PR bodies, logs, or transcripts.
 
-**Helper:** `prompts/repro_helpers.get_syspass_cred(account_search, prefer_name=)` wraps the two-step flow.
+**Helper:** `prompts/repro_helpers.get_syspass_cred(account_search, prefer_name=)` wraps the two-step flow (added in visual-repro Task 4 — until then, call the JSON-RPC directly).
 
 ## Workspace conventions
 
