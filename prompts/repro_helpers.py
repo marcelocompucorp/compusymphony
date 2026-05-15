@@ -212,7 +212,7 @@ def compucorp_drupal_login_autodetect(
     username: str,
     password: str,
     *,
-    try_cognito_bypass: bool = True,
+    try_cognito_bypass: bool = False,  # path not implemented yet; opt-in when ready
 ) -> None:
     """Detect login form shape and drive the flow.
 
