@@ -50,16 +50,51 @@ Integration point: WORKFLOW.md step 10 (§ WORKFLOW changes).
 
 def assert_staging_host(url: str) -> None:
     """Refuse to proceed if `url`'s host is not a known staging environment.
-    Source: hostname patterns *.cc-staging.site, *.cc-data.site,
-    *.cc-prelive.site, *.cc-dev.site. No escape hatch."""
+
+    Allowlist (hostname patterns — match canonical Compucorp staging/test/dev/data
+    surfaces; sourced from prompts/TOOLS.md §Compucorp client dev sites):
+      - *.cc-staging.site
+      - *.cc-data.site
+      - *.cc-prelive.site
+      - *.cc-dev.site
+      - *.cc-test.site            (e.g. <slug>.public.cc-test.site)
+      - *.public.cc-test.site     (explicit sub-pattern for the .public. variant)
+
+    Custom-domain stagings (e.g. staging.<client>.org) are NOT covered by v1 and
+    will hard-refuse. When the first such site appears, add Mongo-based fallback
+    (see Open follow-ups). NO env-var or argument escape hatch — this is the only
+    hard rail."""
 
 # --- Credentials (sysPass) ---
 
 def get_syspass_cred(account_search: str, *, prefer_name: str | None = None) -> dict:
-    """Returns {login, password, url, id, name}. JSON-RPC account/search →
-    filter by prefer_name (e.g. 'Drupal' to disambiguate from 'Basic HTTP Auth').
-    Raises on zero or ambiguous match.
-    SECURITY: callers MUST NOT log the returned dict — password is plain."""
+    """Returns {login, password, url, id, name}.
+
+    Two-step JSON-RPC flow against sysPass at $SYSPASS_URL:
+      1. account/search with text=<account_search>, auth via
+         $SYSPASS_TOKEN_SEARCH + $SYSPASS_PASS_SEARCH (tokenPass).
+         Returns a list of accounts matching the search term.
+      2. If prefer_name is set, filter the list to entries whose `name` field
+         contains prefer_name (case-insensitive). Common values: 'Drupal' to
+         get admin login, 'Basic HTTP Auth' to get Traefik gateway creds.
+         If zero matches after filter → raise ValueError.
+         If multiple matches still → raise ValueError listing them.
+      3. account/viewPass with id=<filtered_id>, auth via
+         $SYSPASS_TOKEN_VIEWPASS + $SYSPASS_PASS_VIEWPASS.
+         Returns the password.
+      4. Merge step 1's metadata + step 3's password into a single dict.
+
+    Env vars required (all four already in ~/.claude/settings.json, auto-forwarded
+    by start-symphony.sh's generic env-load):
+      SYSPASS_URL, SYSPASS_TOKEN_SEARCH, SYSPASS_PASS_SEARCH,
+      SYSPASS_TOKEN_VIEWPASS, SYSPASS_PASS_VIEWPASS
+
+    SECURITY: callers MUST NOT log the returned dict — password is plain.
+
+    Pre-implementation TODO: validate the two-step search→viewPass path
+    empirically. The IESBUILD-267 empirical test used hard-coded account IDs
+    with viewPass-only; the search path is unvalidated. First helper smoke
+    test must exercise the full two-step flow."""
 
 # --- Browser setup ---
 
@@ -79,10 +114,28 @@ def compucorp_drupal_login_autodetect(
     *,
     try_cognito_bypass: bool = True,
 ) -> None:
-    """Detects: Cognito-bypass (/user/local/login), SSP two-step
-    (ssp_core_user_login_or_register_form), standard one-step. By form-shape,
-    not site-config. Raises if no logout link after attempt.
-    Set try_cognito_bypass=False to skip the HEAD probe on known-non-Cognito sites."""
+    """Detects login form shape and drives the flow.
+
+    Three shapes recognised:
+      - Cognito-bypass via /user/local/login (when site has drupal_sso module)
+      - SSP two-step (form id ssp_core_user_login_or_register_form)
+      - Standard Drupal one-step (#edit-name + #edit-pass on same page)
+
+    Detection is by form-shape, not site-config — resilient to per-site overrides.
+    Raises if no logout link appears after the attempt.
+
+    Empirical validation status (as of design date 2026-05-15):
+      - SSP two-step: ✅ validated end-to-end against ies2.cc-staging.site
+      - Cognito-bypass: ⚠️ NOT validated — implementer must add smoke test against
+        a known Cognito site before declaring helper ready
+      - Standard one-step: ⚠️ NOT validated — same caveat
+
+    Until those two paths are validated, raise NotImplementedError with a clear
+    message pointing the agent to fall through to manual verification. The first
+    occurrence of an unvalidated shape signals work needed on the helper.
+
+    Set try_cognito_bypass=False to skip the /user/local/login HEAD probe on
+    known-non-Cognito sites (saves one round-trip)."""
 
 # --- UI utility ---
 
@@ -116,9 +169,17 @@ def lifecycle_test_user(admin_page, username: str, password: str, email: str):
 
 Structure (~1 page, six short sections):
 
-### 1. When to apply (gate)
+### 1. When to apply (gate — three conditions, ALL required)
 
-Diff touches at least one of: `*.tpl`, `*.scss`, `*.css`, files under `themes/`, files under `*.theme/*`, compiled CSS in `dist/`. If the file-type gate matches but you decide the bug isn't reproducible via browser automation (race condition, real-user content, PII), document the decision and skip to `## Manual verification required`.
+The procedure runs only when:
+
+- **(a) UI file types touched:** diff includes at least one of `*.tpl`, `*.scss`, `*.css`, files under `themes/`, files under `*.theme/*`, or compiled CSS in `dist/`.
+- **(b) Staging host identifiable:** a specific staging URL can be resolved from the ticket (description / comments / step 3b's Mongo lookup). Tickets in extension/profile repos (`compucorp/ase`, `compucorp/compuclient`, `compucorp/invoicehelper`) often touch UI but don't bind to a single site — for those, the gate fails (b) and falls through to manual verification with a `## Comments` note explaining which sites are affected.
+- **(c) Staging host passes `assert_staging_host`** (within the allowlist).
+
+If any of (a), (b), (c) fails → skip the procedure entirely, write `## Manual verification required` in the PR body, and document the gate decision in `## Comments` (one line: "Visual repro skipped: <reason>").
+
+Within (a)+(b)+(c), if you decide the bug isn't reproducible via browser automation (race condition, real-user content, PII), document the decision in `## Manual verification required` and skip the rest of the procedure.
 
 ### 2. Three patterns — copy the simplest that fits the bug
 
@@ -130,9 +191,18 @@ The doc shows full code for each pattern, with `<<<AGENT FILLS>>>` markers for t
 
 ### 3. Required structure (all patterns)
 
-- First non-import statement: `assert_staging_host(SITE)` — production safety rail
-- `assert_bug_reproduced(page)` is **defined AND called before `page.screenshot(path="before.png", ...)`** — the proof-of-understanding contract
-- Cleanup is in a `finally:` block (Pattern 3) or context manager (`lifecycle_test_user`) — best-effort, but the unconditional rule
+- **First function call** in the script (after imports + module-level constant assignments like `SITE = "..."`) is `assert_staging_host(SITE)` — production safety rail.
+- `assert_bug_reproduced(page)` is **defined AND called immediately before `page.screenshot(path="before.png", ...)`** — the proof-of-understanding contract.
+- **Stale-output guard:** at the start of `main()`, delete any pre-existing `before.png` (`pathlib.Path("before.png").unlink(missing_ok=True)`). Prevents embedding a stale image from a prior failed run.
+- Cleanup is in a `finally:` block (Pattern 3) or context manager (`lifecycle_test_user`) — best-effort, but the unconditional rule.
+
+### 3.1 File locations and PR embedding
+
+- `repro.py` lives at `<workspace>/repro.py` (workspace root, NOT inside `./repo/`). Same for `before.png`.
+- **Neither file is committed to the client repo.** The audit trail comes from: (i) Symphony's existing per-session JSONL transcript in `~/.claude/projects/...` which captures every tool call including `page.screenshot()`; (ii) the workspace persists on the Symphony host until cleanup.
+- **PR `## Before` embedding strategy for v1:** since the file isn't in the PR diff, the PR body section reads:
+  > Reproduction completed; programmatic assertion fired. Screenshot at `~/symphony_workspaces/<KEY>/before.png` on the Symphony host. Re-run via `python3 ~/symphony_workspaces/<KEY>/repro.py` for live verification.
+- Embedding `before.png` directly in the PR body is **deferred to v2** (options: gist upload via `gh api`, GitHub asset upload, or commit to a Symphony-internal audit branch). This is a real degradation versus the ideal — accepted for v1 because the script-as-artifact + assertion-fired contract still provides the proof-of-understanding the user wanted.
 
 ### 4. The 8 empirical gotchas
 
@@ -162,24 +232,30 @@ If the script raises an unhandled exception OR `assert_bug_reproduced` fails OR 
 Replace existing step 10 with:
 
 ```
-10. **Visual verification (UI-changing PRs).** If the diff touches `*.tpl`,
-    `*.scss`, `*.css`, files under `themes/`, `*.theme/*`, or compiled CSS in
-    `dist/`, invoke the visual reproduction procedure:
+10. **Visual verification (UI-changing PRs).** Apply the three-condition gate
+    from `prompts/visual-repro.md` § 1: (a) diff touches `*.tpl/*.scss/*.css/themes/*.theme/dist`,
+    AND (b) a specific staging URL is resolvable from the ticket, AND (c) the
+    URL passes `assert_staging_host`. If any condition fails, document the gate
+    decision in PR `## Comments` (one line) and proceed to step 11 with
+    `## Manual verification required` in the PR body.
 
-   10a. Read `prompts/visual-repro.md`.
-   10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton
-        to `<workspace>/repro.py`.
-   10c. Fill the two functions: `reproduce(page)` and `assert_bug_reproduced(page)`.
-   10d. Run: `python3 repro.py`. Outputs `before.png` on success.
-   10e. If exit 0 AND `before.png` exists: embed in PR `## Before` via raw
-        GitHub URL after push.
-        Else: write `## Manual verification required` in PR body with explicit
-        reproduction steps.
-   10f. Commit `repro.py` (and `before.png` if present) as a separate commit
-        from the fix: `{{ issue.identifier }}: add visual reproduction evidence`.
+    When all three conditions hold:
 
-   If the file-type gate is NOT matched (non-UI fix), skip 10a-f and proceed
-   to step 11. Document the decision in the PR `## Comments` section.
+    10a. Read `prompts/visual-repro.md`.
+    10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton
+         to `<workspace>/repro.py` (workspace root — NOT inside `./repo/`).
+    10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. Stale-output
+         guard at start of `main()` (delete pre-existing `before.png`).
+    10d. Run: `python3 <workspace>/repro.py`. Outputs `<workspace>/before.png`
+         on success.
+    10e. If exit 0 AND `before.png` exists: PR `## Before` reads
+         > "Reproduction completed; programmatic assertion fired. Screenshot
+         > at `~/symphony_workspaces/{{ issue.identifier }}/before.png` on the
+         > Symphony host. Re-run via `python3 ~/symphony_workspaces/{{ issue.identifier }}/repro.py`."
+         Else: PR body gets `## Manual verification required` with explicit
+         reproduction steps (URL, preconditions, what to look for).
+    10f. Neither `repro.py` nor `before.png` is committed to the client repo
+         in v1 — audit trail lives in workspace + Symphony's JSONL transcript.
 ```
 
 No changes to invariant 9 (mandatory reviewer), invariant 4 (PR template), step 11 (commit and push), step 3b (deployed-ref check), or DRY-RUN OVERRIDE.
@@ -221,14 +297,34 @@ The reviewer uses the existing JSON output schema (new findings with `file="repr
 | Symphony crash mid-run | AGENT_DONE sentinel + workspace preflight (existing v1 mechanisms); orphan test user remains until manual sweep |
 | Reviewer subagent rejects after 3 rounds | Existing WORKFLOW invariant 9 N=3 cap; AGENT_DONE `blocked-review`, no PR |
 
+## Implementation prerequisites (must be done before/during helper coding)
+
+1. **Add a `## sysPass` section to `prompts/TOOLS.md`** documenting the four env vars (`SYSPASS_URL`, `SYSPASS_TOKEN_SEARCH`, `SYSPASS_PASS_SEARCH`, `SYSPASS_TOKEN_VIEWPASS`, `SYSPASS_PASS_VIEWPASS`), the two-step JSON-RPC flow (search → viewPass), and the account naming convention (`name` field disambiguates "Drupal" vs "Basic HTTP Auth" for the same site).
+
+2. **Empirical validation of the two unvalidated paths** before declaring the helper module ready:
+   - sysPass `account/search` two-step flow (the IES test used viewPass-by-ID; the spec mandates search-first)
+   - Cognito-bypass login path (need to run against a known Cognito client site — Marcelo to identify a candidate staging host)
+   - Standard one-step Drupal login (probably feasible against any non-SSP / non-Cognito Compucorp site — likely rare in current estate)
+
+3. **Empirical validation of random-suffix username** lifecycle. The IES test used the fixed name `symphony-test`; the spec mandates `symphony-test-<hex6>`. Re-run the integration smoke test with the random-suffix variant to confirm both create and cancel flows are unaffected.
+
+4. **Integration with DRY-RUN OVERRIDE**: when `agent:dry-run` label is present, the dry-run summary file (`<workspace>/dry-run-summary.md`) gains a section listing the visual-repro outcome (one of: `committed-repro`, `gate-skipped`, `assertion-failed`, `host-not-allowlisted`). Specifically: the existing dry-run summary template (in `WORKFLOW.md` § DRY-RUN OVERRIDE) needs one extra bullet under (e) for repro evidence status.
+
+5. **N=3 reviewer-reject budget interaction**: because the skeleton in `visual-repro.md` bakes the structure (assert_staging_host first call, assert_bug_reproduced-before-screenshot, finally-cleanup), an agent that copies a pattern verbatim cannot fail reviewer rules 1 or 3 from § Reviewer-subagent extension. Only rule 2 (assert position vs screenshot call) is a judgment call. This ensures repro-shape BLOCKERs don't burn the shared N=3 reject budget unnecessarily.
+
 ## Implementation effort estimate
 
 - `prompts/repro_helpers.py`: ~150 lines of Python (6 helpers including lifecycle context manager + small utilities)
 - `prompts/visual-repro.md`: ~1 page (~150 lines)
-- `WORKFLOW.md` step 10 replacement: ~25 lines
+- `prompts/TOOLS.md` — new `## sysPass` section: ~30 lines
+- `WORKFLOW.md` step 10 replacement: ~30 lines
 - `prompts/code-reviewer.md` extension: ~10 lines
-- Unit tests for helpers (mock Playwright): ~100 lines
-- Integration smoke test against IES2 staging: re-uses the existing `/tmp/symphony-repro-test/` script as basis
+- DRY-RUN OVERRIDE summary template: 1-line addition for repro evidence status
+- Unit tests for helpers (mock Playwright + mock sysPass HTTP responses): ~150 lines
+- Integration smoke tests against IES2 staging:
+  - Re-validate sysPass two-step (search → viewPass): ~30 lines
+  - Re-run repro with random-suffix username: re-uses existing `/tmp/symphony-repro-test/full_repro.py` with the new helper
+  - Add a smoke test for Cognito-bypass login on an identified Cognito site (TODO: pick site)
 
 Total: roughly one engineering day for the framework. Per-ticket cost is ~5–10 minutes of agent wall time + the fill-in effort (typically <10 lines for simple CSS bugs).
 
@@ -241,6 +337,18 @@ Total: roughly one engineering day for the framework. Per-ticket cost is ~5–10
 5. `before.png` size cap enforcement (when pathological captures appear)
 6. After-screenshot capability (separate design, requires deploy write access)
 
-## Empirical validation
+## Empirical validation (what's actually been proven)
 
-The mechanism in this design was empirically validated on 2026-05-15 against `ies2.cc-staging.site` for IESBUILD-267 (session-limit screen CSS overlap). End-to-end flow worked: sysPass → Basic Auth → SSP two-step login → admin user creation → two concurrent contexts → session-limit reproduced → screenshot captured → cleanup. Scripts and screenshots preserved in `/tmp/symphony-repro-test/`.
+End-to-end flow validated on 2026-05-15 against `ies2.cc-staging.site` for IESBUILD-267 (session-limit screen CSS overlap), with these specific path choices:
+- sysPass: viewPass-by-ID with hard-coded account IDs (6277 = Basic Auth, 6278 = Drupal admin). **`account/search` flow NOT validated.**
+- Basic Auth: ✅ via Playwright `http_credentials`
+- Login: ✅ SSP two-step (`ssp_core_user_login_or_register_form`). **Cognito-bypass and standard one-step NOT validated.**
+- Admin user creation: ✅ via `/admin/people/create`, fields `edit-pass-pass1`/`edit-pass-pass2`
+- Test username pattern: **fixed `symphony-test` (NOT the spec's random-suffix variant)**
+- Two concurrent contexts: ✅ via `browser.new_context()`
+- Session-limit reproduction: ✅ exact URL `/session/limit`, screenshot captured matching ticket attachment
+- Cleanup: ✅ via `/user/<uid>/cancel` with `force=True` on the cancel-method radio
+
+Scripts and outputs preserved in `/tmp/symphony-repro-test/`.
+
+The validated subset is enough to prove the **mechanism**; the spec's expanded surface (search flow, random suffix, login autodetect for 3 shapes) needs the prerequisites in § Implementation prerequisites before the helper can be declared production-ready.
