@@ -302,7 +302,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     Then PR `## Before` reads (use markdown image syntax with the agent-branch raw URL — `<owner>/<repo>` from step 3):
 
     ```markdown
-    ![Before — session-limit bug reproduced](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/before.png)
+    ![Before — <one-line bug summary>](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/before.png)
 
     Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/{{ issue.identifier }}/repro.py`](https://github.com/<owner>/<repo>/blob/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/repro.py) — re-runnable via `python3 .agent-artifacts/{{ issue.identifier }}/repro.py` from a fresh checkout (requires `SYSPASS_*` env + Playwright).
     ```
