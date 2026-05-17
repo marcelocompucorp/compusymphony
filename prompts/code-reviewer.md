@@ -159,6 +159,20 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
    - PR `## Before` section must contain a markdown image referencing the artifact at the agent-branch raw URL (`https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png`).
    - **BLOCKER** if `before.png` exists in workspace but the artifact commit is missing, OR if the commit mixes artifacts with fix code, OR if PR `## Before` doesn't reference the committed image.
 
+5. **After-state capture for CSS-only diffs** (`visual-repro.md` §8). Determine whether the diff is CSS-only by running, from inside `<workspace>/repo` (keep this command in sync with the gate in `visual-repro.md` §8):
+   ```bash
+   git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+     | grep -v '^.agent-artifacts/' \
+     | grep -vE '\.(scss|css|tpl|map)$' \
+     | head -1
+   ```
+   Empty result → CSS-only. Non-empty → diff includes a behavior-bearing file (`.module`, `.php`, `.tpl.php`, `.info`, `.js`, etc.); after-state injection does not apply.
+
+   - **Proof-of-fix contract.** If `after.png` is committed at `.agent-artifacts/<TICKET>/after.png`, `repro.py` must define `assert_bug_fixed(page)` and call it **immediately before** any `page.screenshot(path="after.png", ...)` — same rule as (2) for `assert_bug_reproduced`/`before.png`. **BLOCKER** if absent, undefined, or called after the screenshot.
+   - **Required on CSS-only diffs.** When the diff is CSS-only AND `before.png` is committed, `after.png` is **expected** in the same artifact commit. **Missing after.png = BLOCKER**: the agent must either capture after.png (preferred) OR add a `## After-state skip rationale` section to `plan.md` explaining why §8 doesn't apply (examples: `FIX_CSS` too entangled to extract reliably, fix targets layout that requires JS-rendered content, fix depends on font-load timing that injection can't simulate). If `plan.md` contains a sound skip rationale on a re-review round, downgrade to **WARNING** and approve.
+   - **Forbidden on non-CSS-only diffs.** If `after.png` is committed but the diff includes any non-CSS file, **BLOCKER**: `add_style_tag` cannot reliably simulate behavioral changes, so the captured `after.png` may misrepresent the post-deploy state. The agent must either drop after.png (and use the manual-verification block in PR `## After`) OR justify in `plan.md` why injection is still valid for this specific case (rare).
+   - **PR ## After reference.** If `after.png` is committed, PR `## After` must reference it with the agent-branch raw URL (parallel to bullet 4's last sub-rule). **BLOCKER** if the image is committed but not referenced.
+
 The reviewer uses the existing JSON output schema; new findings have `file="repro.py"`.
 
 If `repro.py` is absent (gate didn't fire, or skill skipped), no extra checks needed — review proceeds as usual.

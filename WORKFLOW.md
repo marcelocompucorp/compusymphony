@@ -286,20 +286,23 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
     10a. Read `prompts/visual-repro.md`.
     10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo/`).
-    10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`.
-    10d. Run: `cd <workspace> && python3 repro.py`. Outputs `<workspace>/before.png` on success. (The `cd` is required because `page.screenshot(path="before.png")` is cwd-relative.)
-    10e. If exit 0 AND `before.png` exists: copy both `repro.py` and `before.png` into the client repo on the agent branch:
+    10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`. If the substantive diff is CSS-only per `prompts/visual-repro.md` §8's gate, ALSO add the after-state pass — see §8 for the code fixture, the inject-after-reproduce ordering, and the `assert_bug_fixed` contract.
+    10d. Run: `cd <workspace> && python3 repro.py`. Outputs `<workspace>/before.png` on success (and `<workspace>/after.png` when §8 applies). (The `cd` is required because `page.screenshot(path="...")` is cwd-relative.)
+    10e. If exit 0 AND `before.png` exists: copy `repro.py`, `before.png`, and `after.png` (if present) into the client repo on the agent branch:
 
     ```bash
     cd <workspace>/repo
     mkdir -p .agent-artifacts/{{ issue.identifier }}/
     cp ../repro.py .agent-artifacts/{{ issue.identifier }}/repro.py
     cp ../before.png .agent-artifacts/{{ issue.identifier }}/before.png
+    if [ -f ../after.png ]; then
+      cp ../after.png .agent-artifacts/{{ issue.identifier }}/after.png
+    fi
     git add .agent-artifacts/{{ issue.identifier }}/
     git commit -m "{{ issue.identifier }}: add visual reproduction evidence"
     ```
 
-    Then PR `## Before` reads (use markdown image syntax with the agent-branch raw URL — `<owner>/<repo>` from step 3):
+    Then PR `## Before` reads (markdown image syntax with the agent-branch raw URL — `<owner>/<repo>` from step 3):
 
     ```markdown
     ![Before — <one-line bug summary>](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/before.png)
@@ -307,9 +310,19 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/{{ issue.identifier }}/repro.py`](https://github.com/<owner>/<repo>/blob/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/repro.py) — re-runnable via `python3 .agent-artifacts/{{ issue.identifier }}/repro.py` from a fresh checkout (requires `SYSPASS_*` env + Playwright).
     ```
 
+    If `after.png` was also captured (CSS-only diff per §8), PR `## After` reads:
+
+    ```markdown
+    ![After — <one-line description of the fix>](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/after.png)
+
+    Captured by injecting the compiled equivalent of the SCSS change via `page.add_style_tag()` on the same staging URL — the fix is not yet deployed; injection simulates the post-deploy CSS state. The inverse assertion (`assert_bug_fixed`) fired before screenshot.
+    ```
+
+    If `after.png` was NOT captured (diff includes JS/PHP/behavior files), PR `## After` uses the manual-verification block from `visual-repro.md` §8.
+
     If exit non-zero OR `before.png` missing: PR body gets `## Manual verification required` with explicit reproduction steps (URL, preconditions, what to look for).
 
-    10f. **Artifact lifecycle note (operator-facing):** the artifacts land in master after PR merge (~1MB per UI ticket). The branch-name raw URL works during PR review and breaks after branch deletion; the artifacts remain in master's git history at the merge commit indefinitely. This is intentional for v1.5 — the alternatives (gist, side branch, GitHub user-attachments API) are higher-friction. v2 may revisit.
+    10f. **Artifact lifecycle note (operator-facing):** artifacts land in master after PR merge (~1–2 MB per UI ticket; doubled when §8 captures `after.png`). The branch-name raw URL works during PR review and breaks after branch deletion; artifacts remain in master's git history at the merge commit indefinitely. This is intentional for v1.6 — the GitHub user-attachments CDN requires `user_session` cookie auth (cli/cli#13256, community#29993) and is not accessible to the bot PAT, so asymmetric storage would require manual per-PR upload. Object storage (S3, Cloudflare R2) is the cleaner alternative for v2 if repo bloat becomes material.
 
 11. **Commit and push.** Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`.
 
