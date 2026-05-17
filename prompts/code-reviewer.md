@@ -177,10 +177,11 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
    - **BLOCKER** if `create_test_user` is called (directly or via `lifecycle_test_user`) but cleanup is missing, conditional, or only closes the browser without cancelling the user. Orphan test users on staging compound across runs.
 
 4. **Artifact commit pattern** (when reproduction succeeded — `before.png` exists in workspace):
-   - The branch must include a separate commit that adds `.agent-artifacts/<TICKET>/repro.py` AND `.agent-artifacts/<TICKET>/before.png` to the client repo, with commit message `<TICKET>: add visual reproduction evidence`.
+   - The branch must include a separate commit that adds `.agent-artifacts/<TICKET>/repro.py`, `.agent-artifacts/<TICKET>/repro_helpers.py`, AND `.agent-artifacts/<TICKET>/before.png` to the client repo, with commit message `<TICKET>: add visual reproduction evidence`.
    - The commit must be **separate** from the fix commit — they have different audiences (fix = reviewer judgement; artifacts = reviewer evidence).
+   - `repro_helpers.py` MUST be bundled alongside `repro.py`. The script imports `from repro_helpers import ...` with no `sys.path` manipulation, so the helpers must be co-located. Without the bundle the script fails immediately on import in any environment except the operator's machine — that's the failure mode this rule catches.
    - PR `## Before` section must contain a markdown image referencing the artifact at the agent-branch raw URL (`https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png`).
-   - **BLOCKER** if `before.png` exists in workspace but the artifact commit is missing, OR if the commit mixes artifacts with fix code, OR if PR `## Before` doesn't reference the committed image.
+   - **BLOCKER** if `before.png` exists in workspace but the artifact commit is missing; OR if `repro_helpers.py` is missing from the commit; OR if `repro.py` contains a hardcoded `sys.path.insert(0, "/Users/...")` or any absolute filesystem path; OR if the commit mixes artifacts with fix code; OR if PR `## Before` doesn't reference the committed image.
 
 5. **After-state capture for CSS-only diffs** (`visual-repro.md` §8). Determine whether the diff is CSS-only by running, from inside `<workspace>/repo` (keep this command in sync with the gate in `visual-repro.md` §8):
    ```bash

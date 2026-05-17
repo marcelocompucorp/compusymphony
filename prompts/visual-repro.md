@@ -26,8 +26,7 @@ Use when the bug is visible without login (landing page, public form display).
 
 ```python
 """<TICKET>: <one-line bug description>"""
-import sys, os, pathlib
-sys.path.insert(0, "/Users/mar/projects/compuco-symphony/prompts")
+import os, pathlib
 from playwright.sync_api import sync_playwright
 from repro_helpers import (
     assert_staging_host, basic_auth_context, get_syspass_cred,
@@ -76,8 +75,7 @@ Use when the admin user can see the bug (most CMS UI bugs).
 
 ```python
 """<TICKET>: <one-line bug description>"""
-import sys, os, pathlib
-sys.path.insert(0, "/Users/mar/projects/compuco-symphony/prompts")
+import os, pathlib
 from playwright.sync_api import sync_playwright
 from repro_helpers import (
     assert_staging_host, basic_auth_context, get_syspass_cred,
@@ -128,8 +126,7 @@ Use ONLY when admin behaviour differs from non-admin (e.g. session limits, role-
 
 ```python
 """<TICKET>: <one-line bug description>"""
-import sys, os, pathlib, secrets
-sys.path.insert(0, "/Users/mar/projects/compuco-symphony/prompts")
+import os, pathlib, secrets
 from playwright.sync_api import sync_playwright
 from repro_helpers import (
     assert_staging_host, basic_auth_context, get_syspass_cred,
@@ -236,23 +233,26 @@ If the script:
 - `repro.py` is written at `<workspace>/repro.py` (workspace root, NOT inside `./repo/`).
 - `before.png` is written by the script at `<workspace>/before.png`.
 
-**Post-success: commit into the client repo on the agent branch.** After `assert_bug_reproduced` fires and `before.png` is captured, copy both files into `<workspace>/repo/.agent-artifacts/<TICKET>/` and commit them as a SEPARATE commit (not mixed with the fix):
+**Post-success: commit into the client repo on the agent branch.** After `assert_bug_reproduced` fires and `before.png` is captured, copy `repro.py`, `before.png`, and (critically) the snapshot of `repro_helpers.py` it imports, into `<workspace>/repo/.agent-artifacts/<TICKET>/` and commit them as a SEPARATE commit (not mixed with the fix):
 
 ```bash
 cd <workspace>/repo
 mkdir -p .agent-artifacts/<TICKET>/
 cp ../repro.py .agent-artifacts/<TICKET>/repro.py
+cp ../.symphony/prompts/repro_helpers.py .agent-artifacts/<TICKET>/repro_helpers.py
 cp ../before.png .agent-artifacts/<TICKET>/before.png
 git add .agent-artifacts/<TICKET>/
 git commit -m "<TICKET>: add visual reproduction evidence"
 ```
+
+`repro_helpers.py` MUST be bundled alongside `repro.py`. The patterns above import it with `from repro_helpers import ...` (no `sys.path` manipulation); Python adds the running script's parent dir to `sys.path[0]` when invoked as `python3 .agent-artifacts/<TICKET>/repro.py`, so the helpers must be co-located. The committed copy is a snapshot of Symphony's helpers at commit time — future helper changes don't retroactively rewrite past PRs. Bundle cost is ~16 KB per ticket.
 
 **PR `## Before` section (when reproduction succeeded):** use markdown image syntax with the agent-branch raw URL:
 
 ```markdown
 ![Before — <one-line bug summary>](https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png)
 
-Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/<TICKET>/repro.py`](https://github.com/<owner>/<repo>/blob/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/repro.py) — re-runnable from a fresh checkout via `python3 .agent-artifacts/<TICKET>/repro.py` (requires `SYSPASS_*` env + Playwright + chromium).
+Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/<TICKET>/repro.py`](https://github.com/<owner>/<repo>/blob/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/repro.py) — re-runnable from a fresh checkout via `python3 .agent-artifacts/<TICKET>/repro.py` (requires `SYSPASS_*` env + Playwright + chromium; helpers are bundled at `.agent-artifacts/<TICKET>/repro_helpers.py`).
 ```
 
 **Failure → no artifact commit.** If the script raises, the assertion fails, or `assert_staging_host` refuses, do NOT commit `before.png` (even if one was captured pre-assertion — see §3's stale-output guard + ordering rule). The artifact commit is gated on `assert_bug_reproduced` passing.

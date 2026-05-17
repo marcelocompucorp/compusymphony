@@ -65,6 +65,8 @@ hooks:
     set -euo pipefail
     # Make Compucorp playbooks readable from inside the workspace.
     ln -sfn ~/projects/dev-ai-playbooks ./.playbooks || true
+    # Make Symphony's repro helpers reachable for bundling into client-repo artifacts (step 10e).
+    ln -sfn ~/projects/compuco-symphony ./.symphony || true
   # NOTE: env filtering (unset SENDGRID_API_KEY etc, export GH_TOKEN=$OPENCLAW_GH_TOKEN)
   # CANNOT live in a before_run hook here. The hook runs in an isolated subshell
   # (System.cmd "sh" "-lc"), and the Claude CLI spawn (Port.open :spawn_executable)
@@ -298,6 +300,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     cd <workspace>/repo
     mkdir -p .agent-artifacts/{{ issue.identifier }}/
     cp ../repro.py .agent-artifacts/{{ issue.identifier }}/repro.py
+    cp ../.symphony/prompts/repro_helpers.py .agent-artifacts/{{ issue.identifier }}/repro_helpers.py
     cp ../before.png .agent-artifacts/{{ issue.identifier }}/before.png
     if [ -f ../after.png ]; then
       cp ../after.png .agent-artifacts/{{ issue.identifier }}/after.png
@@ -305,6 +308,12 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     git add .agent-artifacts/{{ issue.identifier }}/
     git commit -m "{{ issue.identifier }}: add visual reproduction evidence"
     ```
+
+    The `repro_helpers.py` bundle is required: `repro.py` imports it
+    by sibling-module name (`from repro_helpers import ...`), and Python adds
+    the script's own directory to `sys.path[0]` when invoked as `python3 .agent-artifacts/<KEY>/repro.py`, so co-locating the two
+    files makes the script truly self-contained. Without the bundle, the
+    import fails on every machine except the operator's.
 
     Then PR `## Before` reads (markdown image syntax with the agent-branch raw URL — `<owner>/<repo>` from step 3):
 
