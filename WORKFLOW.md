@@ -48,7 +48,7 @@ polling:
 workspace:
   root: ~/symphony_workspaces
 agent:
-  max_concurrent_agents: 1
+  max_concurrent_agents: 2
   max_turns: 30
 claude:
   command: symphony-claude
