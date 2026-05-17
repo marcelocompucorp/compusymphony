@@ -6,7 +6,10 @@ out into a real Python module so it can grow without becoming unreadable
 and so individual detectors can be unit-tested later.
 
 Invocation:
-    python3 analyze-run.py <path-to-jsonl>
+    python3 analyze-run.py <path-to-jsonl> [workspace-path]
+
+When `workspace-path` is supplied, also validates `<workspace>/AGENT_DONE`
+against the schema in WORKFLOW.md §AGENT_DONE schema.
 
 Reads a Claude Code session JSONL and prints a structured audit covering:
 
@@ -25,6 +28,7 @@ Reads a Claude Code session JSONL and prints a structured audit covering:
 """
 
 import json
+import os
 import re
 import sys
 from collections import Counter
@@ -483,11 +487,77 @@ def section(title):
     print(f"\n--- {title} ---")
 
 
+AGENT_DONE_PREFIXES = ("success", "dry-run", "blocked-review", "blocked")
+AGENT_DONE_ISO8601 = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$"
+)
+
+
+def validate_agent_done(workspace, expected_issue_key=None):
+    """Validate <workspace>/AGENT_DONE against the schema in WORKFLOW.md.
+
+    Returns a list of finding strings — empty list = OK.
+    """
+    path = os.path.join(workspace, "AGENT_DONE")
+    if not os.path.isfile(path):
+        return [f"MISSING: {path} not present (run did not reach a terminal state)"]
+
+    try:
+        with open(path) as fh:
+            raw = fh.read()
+    except OSError as e:
+        return [f"UNREADABLE: {path}: {e}"]
+
+    lines = raw.splitlines()
+    findings = []
+    if len(lines) > 1:
+        findings.append(f"MULTI_LINE: AGENT_DONE has {len(lines)} lines; expected exactly 1")
+    if lines and not raw.endswith("\n"):
+        findings.append("MISSING_TRAILING_NEWLINE: AGENT_DONE should end with a newline")
+
+    line = lines[0] if lines else ""
+    parts = line.split(" ")
+    if len(parts) != 3:
+        findings.append(
+            f"MALFORMED: expected 3 space-separated fields, got {len(parts)}: {line!r}"
+        )
+        return findings
+
+    prefix, ts, key = parts
+    if prefix not in AGENT_DONE_PREFIXES:
+        findings.append(
+            f"BAD_PREFIX: {prefix!r} — expected one of {AGENT_DONE_PREFIXES}"
+        )
+    if not AGENT_DONE_ISO8601.match(ts):
+        findings.append(f"BAD_TIMESTAMP: {ts!r} is not ISO-8601")
+    if expected_issue_key and key != expected_issue_key:
+        findings.append(
+            f"KEY_MISMATCH: AGENT_DONE says {key!r}, workspace expects {expected_issue_key!r}"
+        )
+    return findings
+
+
 def main(argv):
-    if len(argv) != 2:
-        print("Usage: python3 analyze-run.py <path-to-jsonl>", file=sys.stderr)
+    if len(argv) < 2 or len(argv) > 3:
+        print(
+            "Usage: python3 analyze-run.py <path-to-jsonl> [workspace-path]",
+            file=sys.stderr,
+        )
         return 1
     analyze(argv[1])
+    if len(argv) == 3 and argv[2]:
+        workspace = argv[2]
+        expected_key = os.path.basename(workspace.rstrip("/")) or None
+        section("AGENT_DONE schema check")
+        findings = validate_agent_done(workspace, expected_issue_key=expected_key)
+        if not findings:
+            print(f"  ✓ {os.path.join(workspace, 'AGENT_DONE')} conforms to schema (WORKFLOW.md §AGENT_DONE schema).")
+        else:
+            for f in findings:
+                print(f"  ⚠️ {f}")
+            print(
+                "     Schema: '<success|dry-run|blocked-review|blocked> <ISO-8601> <issue.identifier>'"
+            )
     return 0
 
 

@@ -171,7 +171,9 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 - Do step 12a (dispatch the reviewer subagent and save `review-result-r<N>.json`) — we want to validate the reviewer path works.
 - **Do NOT run `gh pr create`** (skip 12c entirely). No PR is to be opened.
 - **Do NOT post the PR-link comment on Jira** (skip step 13).
-- **Do NOT remove the `agent:todo` label** (skip step 14) — leave it on so the operator knows this was a test.
+- **Label handling depends on outcome:**
+  - **Dry-run SUCCESS** (reviewer approved at any round): remove BOTH `agent:todo` AND `agent:dry-run` labels via the Atlassian MCP. This is the only label-mutation done in dry-run mode and exists to prevent the post-completion retry storm. The `<workspace>/dry-run-summary.md` and `<workspace>/AGENT_DONE` files are the operator's audit trail; no comment on Jira is required.
+  - **Dry-run BLOCKED** (reviewer rejected at N=3, or any other blocker per step 12b / the Blockers section): leave BOTH labels ON. A human needs to triage whether to retry. Standard block-Jira-comment still applies per step 12b / Blockers.
 - Leave the local branch + commits in the workspace `./repo/` for human inspection.
 - At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>..HEAD`), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
   - (f) Visual-repro outcome — one of:
@@ -278,6 +280,8 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 8. **Implement with `superpowers:test-driven-development`.** Write a failing test that captures the bug. Make it pass with the smallest reasonable change.
 
+   **Build-artifact policy (theme repos).** If you edit `*.scss`/`*.sass` in a theme directory that has a build script (`package.json` with a `"build"` script, or `gulpfile.js`), also regenerate the corresponding compiled CSS (`dist/css/*.css` or equivalent) and commit it in the same fix commit. `compucorp/ase` and `compucorp/ies` both serve the committed compiled CSS directly via theme `.info` declarations and do NOT rebuild in CI — an SCSS-source-only PR deploys with no styling change. If the local build produces output incompatible with the committed format (e.g., minified vs expanded), hand-append the compiled rules in the expected format and document this in PR `## Comments`. See `code-reviewer.md` "Build-artifact policy" section for the reviewer-side invariant.
+
 9. **Verify with `superpowers:verification-before-completion`.** Run the tests. If the test suite requires a full Docker setup (CiviCRM `./scripts/run.sh setup`), do NOT run it locally — record `Tests not run locally — running on CI` and rely on CI green as the gate. For unit/script tests that run fast, run them and paste real output.
 
 10. **Visual verification (UI-changing PRs).** Apply the three-condition gate from `prompts/visual-repro.md` § 1: (a) diff touches `*.tpl/*.scss/*.css/themes/*.theme/dist`, AND (b) a specific staging URL is resolvable from the ticket (description, comments, or via step 3b Mongo lookup), AND (c) the URL passes `assert_staging_host`. If any condition fails, document the gate decision in PR `## Comments` (one line: "Visual repro skipped: <reason>") and proceed to step 11 with `## Manual verification required` in the PR body.
@@ -353,3 +357,20 @@ If you hit any of these, stop and post a single Jira comment describing the bloc
 - The bug cannot be reproduced and there is no test that can be written for it without speculative changes.
 
 When blocked, the Jira comment should state: what's missing, why it blocks the work, and the concrete human action required to unblock. After posting the comment, write `<workspace>/AGENT_DONE` with content: `blocked <ISO-8601-timestamp> {{ issue.identifier }}` and exit.
+
+## AGENT_DONE schema
+
+`AGENT_DONE` is a single-line sentinel file with exactly three space-separated fields and exactly one of four allowed prefixes:
+
+```
+<prefix> <ISO-8601-timestamp> <issue.identifier>
+```
+
+| Prefix | Meaning | Written by |
+|---|---|---|
+| `success` | Routine ran to completion, PR opened, Jira commented, label removed. | Step 15 |
+| `dry-run` | DRY-RUN OVERRIDE ran through step 12a, reviewer approved, no external side effects. | DRY-RUN OVERRIDE block |
+| `blocked-review` | Reviewer subagent rejected at N=3 (invariant #9 loop limit). | Step 12b |
+| `blocked` | Generic blocker (Blockers section: repo not on allowlist, missing credentials, infra-touching scope, irreproducible bug). | Blockers section |
+
+Any other prefix, missing fields, malformed timestamp, or mismatched `issue.identifier` is a workflow bug and must be flagged by `analyze-run.py`. Operators rely on these strings to triage runs at a glance; do not invent new prefixes without updating this schema first.

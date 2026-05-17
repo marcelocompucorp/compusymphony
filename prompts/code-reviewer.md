@@ -59,6 +59,29 @@ otherwise high-quality code. State explicitly in the finding which step of
 the trace fails (no plan hypothesis? plan doesn't match symptom? diff
 doesn't implement the plan?).
 
+**Plan freshness sub-check** (WARNING, not BLOCKER): for each substantive
+file in the diff (excluding `.agent-artifacts/`), verify it is referenced
+by name in `plan.md`:
+
+```bash
+for f in $(git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+              | grep -v '^.agent-artifacts/'); do
+  if ! grep -q "$(basename "$f")" "$WORKSPACE/plan.md"; then
+    echo "PLAN_DEVIATION: $f"
+  fi
+done
+```
+
+A file in the diff that isn't named in `plan.md` indicates the agent
+pivoted during implementation (typical reason: a better location for the
+same change). The central trace can still pass on substance, but the
+audit trail is broken — `plan.md` no longer reflects what was done.
+Emit one WARNING per deviating file, asking the agent to either (a)
+update `plan.md` to reflect the actual files touched (preferred) or
+(b) document each deviation in PR `## Comments` with a one-line reason.
+Do NOT escalate to BLOCKER on plan deviation alone — the substance
+trace is what gates the diff.
+
 ### 2. Triage-conflict check
 
 If `issue.comments` includes any prior triage saying "wontfix", "not a bug",
@@ -170,12 +193,56 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
 
    - **Proof-of-fix contract.** If `after.png` is committed at `.agent-artifacts/<TICKET>/after.png`, `repro.py` must define `assert_bug_fixed(page)` and call it **immediately before** any `page.screenshot(path="after.png", ...)` — same rule as (2) for `assert_bug_reproduced`/`before.png`. **BLOCKER** if absent, undefined, or called after the screenshot.
    - **Required on CSS-only diffs.** When the diff is CSS-only AND `before.png` is committed, `after.png` is **expected** in the same artifact commit. **Missing after.png = BLOCKER**: the agent must either capture after.png (preferred) OR add a `## After-state skip rationale` section to `plan.md` explaining why §8 doesn't apply (examples: `FIX_CSS` too entangled to extract reliably, fix targets layout that requires JS-rendered content, fix depends on font-load timing that injection can't simulate). If `plan.md` contains a sound skip rationale on a re-review round, downgrade to **WARNING** and approve.
+   - **Critique the skip rationale — do not rubber-stamp.** When `plan.md` carries an `## After-state skip rationale` section, evaluate the rationale on its merits before downgrading the BLOCKER:
+     - **Acceptable rationales** name a specific technical constraint: SCSS source crosses multiple files with mixin composition where the compiled equivalent is non-trivial to extract; fix targets a state requiring user interaction the script can't fake; computed style depends on JS-rendered content the agent can't reliably simulate; layout shift relies on font-load timing that injection can't sequence.
+     - **Unacceptable rationales (escalate back to BLOCKER)** are anything that could be claimed for almost any CSS diff: "complex CSS"; "didn't have time"; "out of scope"; vague references to "tooling issues" or "build complexity"; appeals to "future maintainability". Note the specific phrase you rejected in your finding so the agent knows which clause was insufficient.
+     - **Verify the constraint, don't accept the claim.** If the rationale says "SCSS uses mixins so FIX_CSS extraction is hard", grep the diff for mixin usage; if the diff has no mixin calls, the rationale is false — escalate to BLOCKER and flag the false claim.
    - **Forbidden on non-CSS-only diffs.** If `after.png` is committed but the diff includes any non-CSS file, **BLOCKER**: `add_style_tag` cannot reliably simulate behavioral changes, so the captured `after.png` may misrepresent the post-deploy state. The agent must either drop after.png (and use the manual-verification block in PR `## After`) OR justify in `plan.md` why injection is still valid for this specific case (rare).
    - **PR ## After reference.** If `after.png` is committed, PR `## After` must reference it with the agent-branch raw URL (parallel to bullet 4's last sub-rule). **BLOCKER** if the image is committed but not referenced.
 
 The reviewer uses the existing JSON output schema; new findings have `file="repro.py"`.
 
 If `repro.py` is absent (gate didn't fire, or skill skipped), no extra checks needed — review proceeds as usual.
+
+## Build-artifact policy (theme repos without CI rebuild)
+
+Both `compucorp/ase` and `compucorp/ies` ship the committed compiled CSS directly via theme `.info` declarations (`ies.info:16`, `ase_theme.info` similarly) and run no SCSS build step in their CI pipelines (`.github/workflows/linters.yml` runs phpcs only; there is no `npm run build` or `gulp` invocation). A PR that edits SCSS without regenerating the corresponding compiled CSS will deploy with no styling change — silently broken.
+
+This invariant is **orthogonal to invariant 4**'s `.agent-artifacts/` commit check — `.agent-artifacts/` is review evidence; the compiled CSS under `dist/` (or equivalent) is the deploy target. Both can be required simultaneously and don't substitute for each other.
+
+Run this check when the diff includes any SCSS source. The detection narrows theme directories to those with an actual `"build"` script in `package.json` OR a `gulpfile.js`/`gulpfile.babel.js` task definition — themes without a build script are out of scope for this invariant (they're source-only by design):
+
+```bash
+# Theme dirs that actually have a build pipeline.
+PKG_THEMES=$(git ls-files --full-name -- '*/themes/*/package.json' \
+              | xargs -I{} sh -c 'grep -lE "\"scripts\"\\s*:\\s*\\{[^}]*\"build\"" {} 2>/dev/null' \
+              | xargs -I{} dirname {})
+GULP_THEMES=$(git ls-files --full-name -- '*/themes/*/gulpfile.js' '*/themes/*/gulpfile.babel.js' \
+               | xargs -I{} dirname {})
+THEME_DIRS=$(printf '%s\n%s\n' "$PKG_THEMES" "$GULP_THEMES" | sort -u | grep -v '^$')
+
+SCSS_CHANGED=$(git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+                 | grep -E '\.(scss|sass)$' || true)
+
+# Iterate via while-read for zsh/bash portability (`for d in $VAR` mis-splits under zsh).
+echo "$THEME_DIRS" | while IFS= read -r d; do
+  [ -z "$d" ] && continue
+  if echo "$SCSS_CHANGED" | grep -q "^$d/"; then
+    DIST_CHANGED=$(git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+                    | grep -E "^$d/(dist|build|css|public/css)/.*\.css$" || true)
+    if [ -z "$DIST_CHANGED" ]; then
+      echo "BUILD_ARTIFACT_MISSING: $d edited SCSS but no compiled .css change"
+    fi
+  fi
+done
+```
+
+Note: compiled-CSS paths covered are `dist/`, `build/`, `css/`, and `public/css/`. Themes with non-standard layouts (e.g., asset compilation at repo root) are not auto-detected — for those, the agent must rely on `plan.md` rationale.
+
+- **BLOCKER on missing compiled artifact** unless `plan.md` contains a `## Build-artifact rationale` section. Without the rationale, the diff will silently deploy unchanged styling. The agent should run the theme's build script locally (`cd <theme-dir> && npm run build` or `gulp`) and commit the regenerated compiled CSS.
+- **Acceptable rationales for source-only PR** (downgrade to WARNING): the repo's CI provably rebuilds on PR open (verifiable via `.github/workflows/*.yml` containing `npm run build` or equivalent); the diff intentionally introduces an SCSS rule that's already present in the compiled file via a different selector path (rare); the diff modifies SCSS comments or formatting that doesn't change compiled output (verifiable via local rebuild producing no diff); the theme's compiled output lives at a non-standard path not caught by the regex above (document the actual location).
+- **Unacceptable rationales (stay BLOCKER)**: "CI will rebuild" (verify the workflow file before accepting); "local build produced minified output incompatible with committed format" — this is the established hand-append pattern (see IES-596, IESBUILD-260 PR #228 for prior art); document the hand-append in PR `## Comments` rather than claiming exemption. The agent must commit a corresponding `dist/css/style.css` change in some form; the only question is whether it's npm-output or hand-appended.
+- **Critique the rationale per invariant 5's skip-rationale rules** — same anti-rubber-stamp posture applies.
 
 ## Output format
 

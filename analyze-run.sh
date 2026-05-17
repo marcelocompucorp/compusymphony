@@ -29,8 +29,18 @@ if [ -z "$ARG" ]; then
   exit 1
 fi
 
+WORKSPACE=""
 if [ -f "$ARG" ]; then
   JSONL="$ARG"
+  # Best-effort workspace derivation from a Claude-projects-style path:
+  # ~/.claude/projects/-Users-mar-symphony-workspaces-<KEY>/<session>.jsonl → ~/symphony_workspaces/<KEY>
+  PROJ_BASENAME="$(basename "$(dirname "$ARG")")"
+  if [[ "$PROJ_BASENAME" == "-Users-mar-symphony-workspaces-"* ]]; then
+    KEY="${PROJ_BASENAME#-Users-mar-symphony-workspaces-}"
+    if [ -d "$HOME/symphony_workspaces/$KEY" ]; then
+      WORKSPACE="$HOME/symphony_workspaces/$KEY"
+    fi
+  fi
 else
   # Treat as Jira key — find the workspace project dir and pick latest JSONL.
   PROJ_DIR="$HOME/.claude/projects/-Users-mar-symphony-workspaces-${ARG}"
@@ -44,6 +54,9 @@ else
     echo "FATAL: no .jsonl found in $PROJ_DIR" >&2
     exit 3
   fi
+  if [ -d "$HOME/symphony_workspaces/$ARG" ]; then
+    WORKSPACE="$HOME/symphony_workspaces/$ARG"
+  fi
 fi
 
 echo "==================================================================="
@@ -53,4 +66,4 @@ echo "Transcript: $JSONL"
 echo "Size:       $(wc -c <"$JSONL" | tr -d ' ') bytes, $(wc -l <"$JSONL" | tr -d ' ') entries"
 echo ""
 
-exec python3 analyze-run.py "$JSONL"
+exec python3 analyze-run.py "$JSONL" "$WORKSPACE"
