@@ -65,8 +65,9 @@ hooks:
     set -euo pipefail
     # Make Compucorp playbooks readable from inside the workspace.
     ln -sfn ~/projects/dev-ai-playbooks ./.playbooks || true
-    # Make Symphony's repro helpers reachable for bundling into client-repo artifacts (step 10e).
-    ln -sfn ~/projects/compuco-symphony ./.symphony || true
+    # Co-locate repro_helpers.py with where repro.py will live, so `python3 repro.py`
+    # finds it via Python's default sys.path[0] = script's parent directory.
+    ln -sfn ~/projects/compuco-symphony/prompts/repro_helpers.py ./repro_helpers.py || true
   # NOTE: env filtering (unset SENDGRID_API_KEY etc, export GH_TOKEN=$OPENCLAW_GH_TOKEN)
   # CANNOT live in a before_run hook here. The hook runs in an isolated subshell
   # (System.cmd "sh" "-lc"), and the Claude CLI spawn (Port.open :spawn_executable)
@@ -299,8 +300,6 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     ```bash
     cd <workspace>/repo
     mkdir -p .agent-artifacts/{{ issue.identifier }}/
-    cp ../repro.py .agent-artifacts/{{ issue.identifier }}/repro.py
-    cp ../.symphony/prompts/repro_helpers.py .agent-artifacts/{{ issue.identifier }}/repro_helpers.py
     cp ../before.png .agent-artifacts/{{ issue.identifier }}/before.png
     if [ -f ../after.png ]; then
       cp ../after.png .agent-artifacts/{{ issue.identifier }}/after.png
@@ -309,18 +308,14 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     git commit -m "{{ issue.identifier }}: add visual reproduction evidence"
     ```
 
-    The `repro_helpers.py` bundle is required: `repro.py` imports it
-    by sibling-module name (`from repro_helpers import ...`), and Python adds
-    the script's own directory to `sys.path[0]` when invoked as `python3 .agent-artifacts/<KEY>/repro.py`, so co-locating the two
-    files makes the script truly self-contained. Without the bundle, the
-    import fails on every machine except the operator's.
+    Only the screenshots are committed. The reproduction script and its helpers stay in `<workspace>/` for the operator's audit (and persist in Claude Code's per-session JSONL transcript at `~/.claude/projects/`). They are operator-internal tooling, not artifacts the client repo's maintainers need.
 
     Then PR `## Before` reads (markdown image syntax with the agent-branch raw URL — `<owner>/<repo>` from step 3):
 
     ```markdown
     ![Before — <one-line bug summary>](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/before.png)
 
-    Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/{{ issue.identifier }}/repro.py`](https://github.com/<owner>/<repo>/blob/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/repro.py) — re-runnable via `python3 .agent-artifacts/{{ issue.identifier }}/repro.py` from a fresh checkout (requires `SYSPASS_*` env + Playwright).
+    Reproduction captured against `<staging URL>` (use the `SITE` constant from `repro.py`, e.g. `https://ies2.cc-staging.site`) via a Playwright assertion that fired before the screenshot was taken.
     ```
 
     If `after.png` was also captured (CSS-only diff per §8), PR `## After` reads:

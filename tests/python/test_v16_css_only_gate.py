@@ -73,7 +73,6 @@ CSS_ONLY_CASES = [
         [
             ".agent-artifacts/IESBUILD-260/before.png",
             ".agent-artifacts/IESBUILD-260/after.png",
-            ".agent-artifacts/IESBUILD-260/repro.py",
             "sites/all/themes/custom/ies/assets/sass/_foo.scss",
             "sites/all/themes/custom/ies/dist/css/style.css",
         ],

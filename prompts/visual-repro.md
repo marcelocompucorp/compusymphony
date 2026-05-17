@@ -233,26 +233,24 @@ If the script:
 - `repro.py` is written at `<workspace>/repro.py` (workspace root, NOT inside `./repo/`).
 - `before.png` is written by the script at `<workspace>/before.png`.
 
-**Post-success: commit into the client repo on the agent branch.** After `assert_bug_reproduced` fires and `before.png` is captured, copy `repro.py`, `before.png`, and (critically) the snapshot of `repro_helpers.py` it imports, into `<workspace>/repo/.agent-artifacts/<TICKET>/` and commit them as a SEPARATE commit (not mixed with the fix):
+**Post-success: commit screenshots into the client repo on the agent branch.** After `assert_bug_reproduced` fires and `before.png` is captured, copy the screenshots (only — not the script) into `<workspace>/repo/.agent-artifacts/<TICKET>/` and commit them as a SEPARATE commit (not mixed with the fix):
 
 ```bash
 cd <workspace>/repo
 mkdir -p .agent-artifacts/<TICKET>/
-cp ../repro.py .agent-artifacts/<TICKET>/repro.py
-cp ../.symphony/prompts/repro_helpers.py .agent-artifacts/<TICKET>/repro_helpers.py
 cp ../before.png .agent-artifacts/<TICKET>/before.png
 git add .agent-artifacts/<TICKET>/
 git commit -m "<TICKET>: add visual reproduction evidence"
 ```
 
-`repro_helpers.py` MUST be bundled alongside `repro.py`. The patterns above import it with `from repro_helpers import ...` (no `sys.path` manipulation); Python adds the running script's parent dir to `sys.path[0]` when invoked as `python3 .agent-artifacts/<TICKET>/repro.py`, so the helpers must be co-located. The committed copy is a snapshot of Symphony's helpers at commit time — future helper changes don't retroactively rewrite past PRs. Bundle cost is ~16 KB per ticket.
+Only the screenshots ship to the client repo. `repro.py` and `repro_helpers.py` stay in `<workspace>/` for operator audit (and persist in Claude Code's per-session JSONL transcript at `~/.claude/projects/`). They are operator-internal tooling — client-repo maintainers don't read Python QA scripts in a Drupal theme repo, and committing them was redundant with the workspace + transcript copies.
 
 **PR `## Before` section (when reproduction succeeded):** use markdown image syntax with the agent-branch raw URL:
 
 ```markdown
 ![Before — <one-line bug summary>](https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png)
 
-Reproduction completed; programmatic assertion fired. Reproduction script at [`.agent-artifacts/<TICKET>/repro.py`](https://github.com/<owner>/<repo>/blob/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/repro.py) — re-runnable from a fresh checkout via `python3 .agent-artifacts/<TICKET>/repro.py` (requires `SYSPASS_*` env + Playwright + chromium; helpers are bundled at `.agent-artifacts/<TICKET>/repro_helpers.py`).
+Reproduction captured against `<staging URL>` (use the `SITE` constant from `repro.py`, e.g. `https://ies2.cc-staging.site`) via a Playwright assertion that fired before the screenshot was taken.
 ```
 
 **Failure → no artifact commit.** If the script raises, the assertion fails, or `assert_staging_host` refuses, do NOT commit `before.png` (even if one was captured pre-assertion — see §3's stale-output guard + ordering rule). The artifact commit is gated on `assert_bug_reproduced` passing.
@@ -385,7 +383,13 @@ When the diff includes any executable-behavior file (`*.js`, `*.php`, `*.module`
 ```markdown
 ## After
 
-_Manual verification required:_ this fix changes runtime behavior; the visual repro captures the pre-fix state only. After deploying the fix to staging, re-run [`.agent-artifacts/<TICKET>/repro.py`](https://github.com/<owner>/<repo>/blob/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/repro.py); `assert_bug_reproduced` should now FAIL — that inversion is the proof-of-fix.
+_Manual verification required:_ this fix changes runtime behavior; the captured before-state shows the bug. After deploy, manually confirm the symptom shown in the before screenshot is no longer present — perform the same user action (described below) against the deployed fix and verify the bug is gone.
+
+Steps to manually verify post-deploy:
+1. <one-line user-facing action that reproduced the bug, e.g.: "Log in as a non-admin user, click the search icon in the header, then click anywhere outside the search panel.">
+2. Confirm: <expected post-fix outcome, e.g.: "The search panel closes immediately, matching standard click-away behaviour.">
+
+If either step still reproduces the before-state, the fix needs follow-up.
 ```
 
 ### Failure handling
