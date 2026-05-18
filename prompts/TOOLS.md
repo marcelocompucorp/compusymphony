@@ -264,6 +264,7 @@ unset BU BP AU AP  # drop the secrets from this shell when done
 
 - The full agent JSONL transcript is persisted by the audit (TOOLS.md §General-rules). Anything in `stdout` reaches operators reviewing the run.
 - Do NOT `echo "$BP"` or `echo "$AP"`. Do NOT run `env` or `printenv` in a shell where they're set.
+- `set +x` inside the recipe disables trace for the *current* shell only — if a parent shell already had `set -x` active, the recipe's variable expansions would have been traced upstream. If you sourced this from a `set -x` parent (or via `bash -x …`), turn trace off in the PARENT before invoking the recipe.
 - Do NOT pass secrets as command-line arguments to any binary (they appear in `ps`). Use `-K` config (curl), stdin, environment, or a file with `chmod 600`.
 - Do NOT log a stack trace that includes the variable's value. Catch exceptions early when handling credentials.
 - After use, `unset BU BP AU AP` to drop them from the shell.

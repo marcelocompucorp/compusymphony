@@ -108,9 +108,9 @@ These override defaults; treat them as hard rules.
    - `compucorp/webform_civicrm` — **⚠️ fork**. Same caveat: run step 3a.
    - `compucorp/nes-mirror` — **⚠️ mirror (name says so)**. Do NOT open PRs here without confirming upstream.
 
-   **Default branch for unannotated entries below:** discover at runtime via `gh api repos/<owner>/<repo> --jq .default_branch`. Do not assume `master`/`main`.
+   **Default branch for unannotated entries below:** discover at runtime via `gh api repos/<owner>/<repo> --jq .default_branch`. Do not assume `master`/`main`. (Repeated on each section heading below for agents that jump straight to a section.)
 
-   **Client sites / themes / distributions:**
+   **Client sites / themes / distributions** (default branch: discover at runtime via `gh api`):
    - `compucorp/civiplus-distribution`
    - `compucorp/ciwem`
    - `compucorp/core-website`
@@ -125,7 +125,7 @@ These override defaults; treat them as hard rules.
    - `compucorp/mm`
    - `compucorp/tcos`
 
-   **Extensions / modules / themes:**
+   **Extensions / modules / themes** (default branch: discover at runtime via `gh api`):
    - `compucorp/abn`
    - `compucorp/compu_bs5`
    - `compucorp/compuco_civicrm_commerce`
@@ -141,7 +141,7 @@ These override defaults; treat them as hard rules.
    - `compucorp/uk.co.compucorp.civiawards`
    - `compucorp/webform_bootstrap`
 
-   **Infrastructure / tooling / Docker images / configs** (⚠️ patching these affects fleet-wide deploys — apply extra scrutiny, prefer to escalate to a human unless the fix is purely cosmetic / docs):
+   **Infrastructure / tooling / Docker images / configs** (default branch: discover at runtime via `gh api`; ⚠️ patching these affects fleet-wide deploys — apply extra scrutiny, prefer to escalate to a human unless the fix is purely cosmetic / docs):
    - `compucorp/anondbs-list`
    - `compucorp/ansible.inventory`
    - `compucorp/compuco.docker.images.ansible`
