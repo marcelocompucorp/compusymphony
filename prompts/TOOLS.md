@@ -4,7 +4,7 @@ Operational tooling reference adapted from `openclaw-configurations/TOOLS.md` an
 
 ## General rules
 
-- **All credentials below are read-only.** The agent must NOT attempt writes via any of these services — writes are restricted to git operations on the target repo, opening the PR, and the single Jira comment posting the PR link.
+- **All credentials below are read-only.** The agent must NOT attempt writes via any of these services. The only writes the agent performs are: git operations on the target repo, `gh pr create`, and Jira mutations explicitly named in WORKFLOW.md (the PR-link comment, comment-on-exit for various blocker paths, the `agent:todo` label removal). **In dry-run mode, ALL Jira writes are suppressed** except the success-path label removal — see WORKFLOW.md DRY-RUN OVERRIDE.
 - **PII redaction (WORKFLOW.md invariant #10).** Several services (SendGrid Mail Activity, MongoDB `compucorp.sites`, Loki) return end-user PII — recipient emails, contact names, message bodies. The full JSONL transcript is persisted by the audit. When citing this data in a PR or Jira comment, **redact recipient emails** as `r***@example.com`, do not paste contact names verbatim, and do not include subject lines or message bodies. Quote only the structural evidence (timestamps, status codes, IDs).
 - Prefer **time-bounded queries** — start with a 30 min / 1 h window and expand if needed.
 - Use `python3`, not `python`.
@@ -202,34 +202,76 @@ Useful for: "did a spike correlate with this bug report's timeframe?", "what was
 
 Compucorp client sites have dev/test instances at hostnames like `<slug>.public.cc-test.site` or `<slug>.cc-staging.site`. These are fronted by a Traefik gateway that requires HTTP Basic Auth before the app login.
 
-**Two layers of auth — distinct:**
+**Two layers of auth — both retrieved from sysPass (see §sysPass below):**
 
-1. **HTTP Basic Auth (Traefik gateway)** — required first. The credentials are per-site, stored encrypted (VAULT prefix) in MongoDB `compucorp.sites.<site>.basic_auth`. If the operator has provided them as env vars, they live in `$DEV_SITE_BASIC_USER` / `$DEV_SITE_BASIC_PASS` (and the relevant site URL in `$DEV_SITE_URL`). If those env vars are NOT set, you cannot reach the app — investigate via repo code only, do not try to brute-force or guess.
+1. **HTTP Basic Auth (Traefik gateway)** — required first. Credentials live in sysPass under the account name `Basic HTTP Auth` per site. Use the documented helper:
 
-2. **App login (Drupal/CiviCRM admin)** — required after gateway. Default for dev sites is **`compucorp_admin` / `compucorp_admin`** (correct ~99% of the time per the operator).
+   ```python
+   import sys; sys.path.insert(0, '/Users/mar/projects/compuco-symphony/prompts')
+   from repro_helpers import get_syspass_cred
+   basic = get_syspass_cred(SITE_HOST, prefer_name="Basic HTTP Auth")
+   # basic["login"], basic["password"] — pass to Playwright via basic_auth_context()
+   # or to curl via -u "$basic_login:$basic_password"
+   ```
 
-**Pattern to reach an admin page** (when env vars are set):
+   Do NOT try to decrypt the VAULT-prefixed value in MongoDB `compucorp.sites.<site>.basic_auth` — that's Ansible vault, not accessible from the agent environment. The legacy `$DEV_SITE_BASIC_USER` / `$DEV_SITE_BASIC_PASS` env vars are typically not set today; sysPass is the canonical path.
+
+2. **App login (Drupal/CiviCRM admin)** — required after gateway. Same sysPass path:
+
+   ```python
+   admin = get_syspass_cred(SITE_HOST, prefer_name="Drupal")
+   # admin["login"] is usually compucorp_admin; admin["password"] is the actual secret.
+   ```
+
+   The historical default of `compucorp_admin` / `compucorp_admin` works on some legacy sites but is NOT reliable for current staging sites — always use sysPass.
+
+**Pattern to reach an admin page from a Bash session** (for ad-hoc inspection; for Playwright use `repro_helpers.basic_auth_context` + `compucorp_drupal_login_autodetect` directly):
 
 ```bash
-# Sanity check the gateway:
-curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
-  -u "$DEV_SITE_BASIC_USER:$DEV_SITE_BASIC_PASS" \
-  "$DEV_SITE_URL/"
+set +x  # belt-and-braces: never expand commands containing passwords into the transcript
+SITE_HOST="ies2.cc-staging.site"
 
-# Login to Drupal (carries cookies via -c / -b):
+# Fetch both credentials from sysPass via one Python call. Each value on its own
+# line; `read -r` handles passwords containing shell-special characters (quotes,
+# backticks, $) that an `eval` of a `repr()`-ed string could mis-tokenize.
+{ read -r BU; read -r BP; read -r AU; read -r AP; } < <(python3 -c "
+import sys; sys.path.insert(0, '/Users/mar/projects/compuco-symphony/prompts')
+from repro_helpers import get_syspass_cred
+b = get_syspass_cred('$SITE_HOST', prefer_name='Basic HTTP Auth')
+a = get_syspass_cred('$SITE_HOST', prefer_name='Drupal')
+print(b['login']); print(b['password']); print(a['login']); print(a['password'])
+")
+
+# Sanity check the gateway. Use --netrc-file or env-var auth, NOT inline -u "$BU:$BP"
+# on the command line (would appear in `ps`). Here we feed via curl's -K config:
+curl -sS -o /dev/null -w "HTTP %{http_code}\n" -K <(printf 'user = "%s:%s"\n' "$BU" "$BP") \
+  "https://$SITE_HOST/"
+
+# Login to Drupal (carries cookies via -c / -b). Same -K pattern keeps creds out of argv:
 COOKIE_JAR=$(mktemp)
-curl -sS -u "$DEV_SITE_BASIC_USER:$DEV_SITE_BASIC_PASS" -c "$COOKIE_JAR" \
-  -F "name=compucorp_admin" -F "pass=compucorp_admin" -F "form_id=user_login" \
-  "$DEV_SITE_URL/user/login" >/dev/null
+curl -sS -K <(printf 'user = "%s:%s"\n' "$BU" "$BP") -c "$COOKIE_JAR" \
+  -F "name=$AU" -F "pass=$AP" -F "form_id=user_login" \
+  "https://$SITE_HOST/user/login" >/dev/null
 
-# Now fetch the admin page (CiviCRM example):
-curl -sS -u "$DEV_SITE_BASIC_USER:$DEV_SITE_BASIC_PASS" -b "$COOKIE_JAR" \
-  "$DEV_SITE_URL/civicrm/contact/view?reset=1&cid=..."
+# Fetch the admin page:
+curl -sS -K <(printf 'user = "%s:%s"\n' "$BU" "$BP") -b "$COOKIE_JAR" \
+  "https://$SITE_HOST/civicrm/contact/view?reset=1&cid=..."
+
+unset BU BP AU AP  # drop the secrets from this shell when done
 ```
+
+**PII / secrets hygiene (concrete, not aspirational):**
+
+- The full agent JSONL transcript is persisted by the audit (TOOLS.md §General-rules). Anything in `stdout` reaches operators reviewing the run.
+- Do NOT `echo "$BP"` or `echo "$AP"`. Do NOT run `env` or `printenv` in a shell where they're set.
+- Do NOT pass secrets as command-line arguments to any binary (they appear in `ps`). Use `-K` config (curl), stdin, environment, or a file with `chmod 600`.
+- Do NOT log a stack trace that includes the variable's value. Catch exceptions early when handling credentials.
+- After use, `unset BU BP AU AP` to drop them from the shell.
+- Do NOT include any portion of the password in Jira comments or PR bodies, even as part of a debug paste.
 
 **Do NOT modify state on the dev site.** Read-only inspection only — confirm bug exists, capture HTML/JSON for evidence, then propose code fix. Do not POST forms, change records, or trigger background jobs.
 
-**Limitation:** if the agent doesn't have basic auth env vars, it must investigate via code reading alone. The agent should NOT decrypt VAULT values from Mongo — that's not in scope for Phase 1.
+**If sysPass itself is unreachable** (env vars unset, JSON-RPC errors) — only then fall back to repo-code-only investigation. Document in the Jira block comment or workspace summary what specifically failed so the operator can fix the env setup. Do NOT silently give up because basic-auth env vars aren't set; check sysPass first.
 
 ## sysPass (Compucorp self-hosted password manager)
 

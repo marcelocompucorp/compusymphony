@@ -96,11 +96,67 @@ You are running unattended. Never ask a human for follow-up steps. Stop early on
 
 These override defaults; treat them as hard rules.
 
-1. **Repo allowlist.** Only clone and modify repos whose full name matches this list:
+1. **Repo allowlist.** Only clone and modify repos whose full name matches this list (derived from what the `openclawautomation` GitHub user has push access to in the `compucorp` org as of 2026-05-18):
+
+   **Annotated — known quirks; read the note before patching:**
    - `compucorp/ase` (default branch: `master`) — Compucorp-owned client repo, this IS the source.
    - `compucorp/compuclient` (default branch: `7.x-7.x` — major-version branch, not `master`) — Compucorp-owned profile, this IS the source.
    - `compucorp/invoicehelper` (default branch: `master`) — **⚠️ currently a read-only mirror of `lab.civicrm.org/extensions/invoicehelper`**. Do NOT open PRs here; see routine step 3a for what to do when an allowlisted repo turns out to be a mirror.
    - `compucorp/ies` — Compucorp-owned client site (IES2). Determine the default branch at runtime via `gh api repos/compucorp/ies --jq .default_branch`.
+   - `compucorp/civicrm-core` — **⚠️ fork of `civicrm/civicrm-core`**. Run routine step 3a's `compuclient.make.yml` check before assuming Compucorp is the source.
+   - `compucorp/uk.co.vedaconsulting.mosaico` — **⚠️ fork**. Same caveat: run step 3a.
+   - `compucorp/webform_civicrm` — **⚠️ fork**. Same caveat: run step 3a.
+   - `compucorp/nes-mirror` — **⚠️ mirror (name says so)**. Do NOT open PRs here without confirming upstream.
+
+   **Default branch for unannotated entries below:** discover at runtime via `gh api repos/<owner>/<repo> --jq .default_branch`. Do not assume `master`/`main`.
+
+   **Client sites / themes / distributions:**
+   - `compucorp/civiplus-distribution`
+   - `compucorp/ciwem`
+   - `compucorp/core-website`
+   - `compucorp/cst`
+   - `compucorp/drw-website`
+   - `compucorp/dta`
+   - `compucorp/eseb`
+   - `compucorp/hse_dais_documents`
+   - `compucorp/hse_dais_main_app`
+   - `compucorp/hse_dais_merge`
+   - `compucorp/irs`
+   - `compucorp/mm`
+   - `compucorp/tcos`
+
+   **Extensions / modules / themes:**
+   - `compucorp/abn`
+   - `compucorp/compu_bs5`
+   - `compucorp/compuco_civicrm_commerce`
+   - `compucorp/drupal-sso`
+   - `compucorp/FDW`
+   - `compucorp/io.compuco.gocardless`
+   - `compucorp/io.compuco.impactstack`
+   - `compucorp/io.compuco.lmsd2lintegration`
+   - `compucorp/io.compuco.paymentprocessingcore`
+   - `compucorp/payments-middleware`
+   - `compucorp/ssp_bootstrap`
+   - `compucorp/ssp_core`
+   - `compucorp/uk.co.compucorp.civiawards`
+   - `compucorp/webform_bootstrap`
+
+   **Infrastructure / tooling / Docker images / configs** (⚠️ patching these affects fleet-wide deploys — apply extra scrutiny, prefer to escalate to a human unless the fix is purely cosmetic / docs):
+   - `compucorp/anondbs-list`
+   - `compucorp/ansible.inventory`
+   - `compucorp/compuco.docker.images.ansible`
+   - `compucorp/compuco.docker.images.php-fpm`
+   - `compucorp/compuco.docker.images.php-fpm.civicrm`
+   - `compucorp/compudeploy`
+   - `compucorp/docker.application-profiles`
+   - `compucorp/homebrew-tools`
+   - `compucorp/infrastructure.docker-mcp`
+   - `compucorp/infrastructure.varnish-ecs`
+   - `compucorp/jenkins`
+   - `compucorp/jenkins-configurations`
+   - `compucorp/mysql-database-anonymizer`
+   - `compucorp/openclaw-configurations`
+   - `compucorp/terraform`
 
    If the ticket does not clearly map to a repo on this list, **stop**, post a Jira comment explaining what's needed to determine the target repo, and exit. Real Compucorp bugs often span multiple repos (extension + client + Compuclient core); when in doubt, ask via comment rather than guess.
 
@@ -173,10 +229,10 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 - Do steps 1–11 fully (investigate, plan, implement, commit locally).
 - Do step 12a (dispatch the reviewer subagent and save `review-result-r<N>.json`) — we want to validate the reviewer path works.
 - **Do NOT run `gh pr create`** (skip 12c entirely). No PR is to be opened.
-- **Do NOT post the PR-link comment on Jira** (skip step 13).
+- **Suppress ALL agent-initiated Jira writes in dry-run mode** — no comments, label mutations, status transitions, worklogs, or issue links of any kind, with ONE exception (the success-path label removal below). This is a categorical rule, not an enumeration: any new agent-initiated Jira write added to the Routine in future MUST also be suppressed under dry-run. The currently-known write paths covered: step 13 PR-link comment, step 1a triage-conflict comment, Blockers-section block comment, invariant 1's allowlist-miss comment, step 3b's multi-site / zero-site / ambiguous-images.php / failed-rev-parse comments, any TOOLS.md gated-request comment (e.g. Loki production approval, AWS role-ARN request), and any future comment-on-exit path. The operator triggered the dry-run, has the workspace + `<workspace>/dry-run-summary.md` + `<workspace>/AGENT_DONE` as the complete audit trail, and can inspect everything directly. Jira viewers (other engineers, clients) MUST NOT see test-run artifacts.
 - **Label handling depends on outcome:**
-  - **Dry-run SUCCESS** (reviewer approved at any round): remove BOTH `agent:todo` AND `agent:dry-run` labels via the Atlassian MCP. This is the only label-mutation done in dry-run mode and exists to prevent the post-completion retry storm. The `<workspace>/dry-run-summary.md` and `<workspace>/AGENT_DONE` files are the operator's audit trail; no comment on Jira is required.
-  - **Dry-run BLOCKED** (reviewer rejected at N=3, or any other blocker per step 12b / the Blockers section): leave BOTH labels ON. A human needs to triage whether to retry. Standard block-Jira-comment still applies per step 12b / Blockers.
+  - **Dry-run SUCCESS** (reviewer approved at any round): remove BOTH `agent:todo` AND `agent:dry-run` labels via the Atlassian MCP. **This is the only Jira mutation permitted in dry-run mode**, and exists to prevent the post-completion retry storm.
+  - **Dry-run BLOCKED** (reviewer rejected at N=3, or any other blocker per step 12b / the Blockers section): leave BOTH labels ON for human triage. The block reason goes into `<workspace>/dry-run-summary.md` ONLY — NOT into a Jira comment. If the operator wants to share the block reason on Jira, they post it manually after reviewing the workspace.
 - Leave the local branch + commits in the workspace `./repo/` for human inspection.
 - At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>..HEAD`), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
   - (f) Visual-repro outcome — one of:
@@ -184,6 +240,11 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
     - `gate-skipped` (gate condition failed; reason)
     - `assertion-failed` (script ran but assert_bug_reproduced didn't fire)
     - `host-not-allowlisted` (assert_staging_host refused)
+  - (g) **If the run was blocked (any path — reviewer N=3, Blockers section, triage-conflict, allowlist-miss, multi/zero-site match, ambiguous deploy ref, etc.)**, include the full text that WOULD have been the Jira comment under normal mode. Structure it with explicit subheadings so the operator can copy-paste verbatim into Jira if they choose:
+    - `### Block reason` — one-line summary
+    - `### Investigation summary` — what the agent looked at and what it found
+    - `### Unblocker actions` — concrete next steps a human would need to take (env vars to set, screenshots to attach, decisions to make)
+    `dry-run-summary.md` is the operator's audit trail; nothing escapes to Jira.
 - Write `<workspace>/AGENT_DONE` with content: `dry-run <ISO-8601-timestamp> {{ issue.identifier }}`
 
 Invariants 1–11 still apply in full. The only thing being skipped is the external side-effect emission.
