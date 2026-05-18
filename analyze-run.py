@@ -97,6 +97,218 @@ TRIAGE_FIRST_ALLOWED_LATER = (
     "atlassianUserInfo",
 )
 
+# Jenkins-write detector (WORKFLOW.md invariant #5 carve-out).
+# The ONLY Jenkins jobs the agent may trigger are the two literal paths below.
+# Anything else — different job, different verb (DELETE/PUT), or any
+# undecorated POST — is a violation. The detector greps Bash command text;
+# it sees both `curl -X POST` and Python `requests.post(...)` /
+# `trigger_dev_site(` / `trigger_release_devsite(` invocations from
+# `repro_helpers`.
+JENKINS_DEVSITE_JOB_PATH_SUBSTR = (
+    "/job/Deployments/job/Dev%20Sites%20-%20Compucontainer"
+    "/job/Create%20Dev%20Site%20-%20Client%20Specific"
+)
+# Phase B: Release Dev Site (fix branch released to existing dev site).
+JENKINS_RELEASE_JOB_PATH_SUBSTR = (
+    "/job/Deployments/job/Dev%20Sites%20-%20Compucontainer"
+    "/job/_Release%20Dev%20Site"
+)
+# Both allowed job paths in one set for uniform lookup.
+_JENKINS_ALLOWED_JOB_PATHS = frozenset({
+    JENKINS_DEVSITE_JOB_PATH_SUBSTR,
+    JENKINS_RELEASE_JOB_PATH_SUBSTR,
+})
+# Repos the carved-out Jenkins job can actually deploy as a running
+# Drupal+Civi site. Anything outside this list, even on the correct job
+# path, is a workflow violation. Keep in sync with WORKFLOW.md invariant #5.
+SITE_DEPLOYABLE_REPOS = frozenset({
+    "ase", "ies", "eseb", "ciwem", "dta", "drw-website", "tcos", "irs",
+    "hse_dais_documents", "hse_dais_main_app", "hse_dais_merge",
+    "civiplus-distribution", "core-website", "mm", "cst",
+})
+# Verbs that constitute a write. GET is read; HEAD is read.
+_JENKINS_WRITE_VERB_RE = re.compile(
+    r"(?:-X\s*['\"]?(?:POST|PUT|DELETE|PATCH)|"
+    r"requests\.(?:post|put|delete|patch)\s*\()",
+    re.IGNORECASE,
+)
+# A `curl` to a Jenkins URL without -X defaults to GET, but with --data /
+# --data-urlencode / -d it's a POST. Catch that variant too.
+_JENKINS_CURL_DATA_RE = re.compile(
+    r"curl\b[^\n]*(?:--data(?:-urlencode|-binary|-raw)?|(?<![A-Za-z])-d\s)",
+    re.IGNORECASE,
+)
+# Substring that signals the command is touching Jenkins at all. We accept
+# `$JENKINS_URL`, an explicit `jenkins.` hostname, or a Jenkins-style `/job/`
+# path. Combined with the verb gate above, this minimises false positives.
+_JENKINS_HOST_RE = re.compile(
+    r"(?:\$JENKINS_URL|jenkins\.[a-z0-9.-]+|/job/[A-Za-z0-9%_.-])",
+    re.IGNORECASE,
+)
+# Repo-name extraction from a recorded Bash command. Handles raw curl
+# (--data-urlencode "git_repo=git@github.com:compucorp/<name>.git") and
+# Python helper calls (trigger_dev_site(git_repo="git@github.com:compucorp/<name>.git"...).
+# Terminator is "any non-repo-name character" — covers `.git`, quote chars,
+# space, `&` (urlencoded body separator), `,` (Python kwarg separator), etc.
+_GIT_REPO_RE = re.compile(
+    r"git@github\.com[:/]compucorp/([A-Za-z0-9._-]+?)(?:\.git\b|[^A-Za-z0-9._-])",
+    re.IGNORECASE,
+)
+
+
+def extract_devsite_trigger_repo(cmd):
+    """Pull the compucorp/<repo> short name out of a recorded Bash command.
+
+    Returns None if no `git@github.com:compucorp/<repo>` pattern is present.
+    Used by the audit to cross-check the trigger's target against
+    SITE_DEPLOYABLE_REPOS — without this, the audit would silently pass a
+    dev-site trigger for an extension or infra repo.
+    """
+    m = _GIT_REPO_RE.search(cmd or "")
+    return m.group(1) if m else None
+
+
+# Python-execution sniffer. The carve-out trusts the `trigger_dev_site(`
+# helper only when it's actually being EXECUTED by Python — not appearing
+# as a string inside `echo`, `grep`, a heredoc, or any other quoting
+# construct. We detect this by checking that the effective command (after
+# stripping leading whitespace, env-var assignments, and `cd <path> &&`
+# prefixes) starts with `python` or `python3`.
+#
+# THREAT MODEL: the audit's job is to catch a CONFUSED agent (or a
+# regression in WORKFLOW.md prose causing the agent to invoke Jenkins
+# incorrectly), NOT an adversarial actor. Known bypasses that we DON'T
+# attempt to catch:
+#   - `bash -c "python3 -c '...trigger_dev_site(...'"` — first token is
+#     `bash`, so we miss the call entirely (silently). The actual Jenkins
+#     trigger still fires; the audit just doesn't record it.
+#   - `$(echo python3) -c "..."` — shell command substitution; same.
+#   - Two-step: `tee script.py <<<"trigger_dev_site(..." && python3 script.py`
+#     — second command is `python3 script.py`, no helper name visible.
+# In all cases the SITE_DEPLOYABLE_REPOS allowlist (enforced via Jenkins
+# job ACL + the Bash audit + WORKFLOW.md prose) provides defence in depth.
+# If adversarial prompt-injection becomes a real concern, replace this
+# detector with structured tool-call inspection (the JSONL records
+# subagent_type/name/input on every dispatch — that's a tamper-evident
+# channel the Bash text isn't).
+_LEADING_ENV_RE = re.compile(r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)+")
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+\S+(?:\s*&&\s*|\s*;\s*)", re.IGNORECASE)
+_PYTHON_HEAD_RE = re.compile(r"^\s*python3?\b", re.IGNORECASE)
+
+
+def _is_python_execution(cmd):
+    """True iff cmd's first effective token is `python` or `python3`.
+
+    Tolerates leading env-var assignments (`FOO=bar python3 ...`) and a
+    leading `cd <path> &&` (common idiom). Anything more nested — `echo`,
+    `grep`, `cat`, `bash -c "..."` — does NOT count, even if the inner
+    string happens to contain `python3 ...`.
+    """
+    if not cmd:
+        return False
+    stripped = cmd
+    # Repeatedly strip leading wrappers in a fixed-point loop. Each pass:
+    # leading whitespace → env vars → cd-and-chain. Stop when nothing changes.
+    while True:
+        new = _LEADING_ENV_RE.sub("", stripped, count=1)
+        new = _LEADING_CD_RE.sub("", new, count=1)
+        if new == stripped:
+            break
+        stripped = new
+    return bool(_PYTHON_HEAD_RE.match(stripped))
+
+
+def detect_jenkins_writes(bash_commands):
+    """Partition Bash commands into Jenkins-write attempts allowed vs disallowed.
+
+    Returns: {"allowed": [(idx, cmd), ...], "disallowed": [(idx, cmd), ...]}
+
+    A command counts as a Jenkins write iff:
+      - it contains a Jenkins-host signal (`$JENKINS_URL`, `jenkins.<host>`,
+        or `/job/...`), AND
+      - it uses a write verb (`-X POST/PUT/DELETE/PATCH`, or `--data`/`-d`
+        on a curl, or `requests.post/put/delete/patch(`), OR it invokes one
+        of the two carved-out helpers (`trigger_dev_site(` or
+        `trigger_release_devsite(`) directly.
+
+    A write is `allowed` iff it ALSO targets one of the two canonical job path
+    substrings AND uses POST (not DELETE/PUT/PATCH) — the carve-out is for
+    build triggers only. Helper calls are unconditionally allowed because the
+    helpers are hard-coded to the carved-out job paths.
+
+    Everything else that satisfies the write-attempt definition is disallowed.
+    """
+    allowed = []
+    disallowed = []
+    for entry in bash_commands:
+        idx, _desc, cmd = entry
+
+        # --- Path A: Python execution of a carved-out helper ---
+        # Only counts if the cmd's effective first token is `python`/`python3`
+        # (after stripping env vars + `cd ... &&`). A bare helper name inside
+        # echo / grep / cat-heredoc / bash-c does NOT match.
+        is_create_helper = "trigger_dev_site(" in cmd
+        is_release_helper = "trigger_release_devsite(" in cmd
+        if (is_create_helper or is_release_helper) and _is_python_execution(cmd):
+            if is_create_helper:
+                # Even via the helper, must target an allowlisted repo. The
+                # helper itself is hard-coded to the carved-out job path, so
+                # the only remaining axis to gate is `git_repo`.
+                repo = extract_devsite_trigger_repo(cmd)
+                if repo is None or repo in SITE_DEPLOYABLE_REPOS:
+                    # repo=None: legitimate when tests/docs use a placeholder
+                    # like git_repo="g"; reporter will WARN that it couldn't
+                    # cross-check. Don't reclassify as disallowed.
+                    allowed.append((idx, cmd))
+                else:
+                    disallowed.append((idx, cmd))
+            else:
+                # Release helper: no git_repo param — just allow it.
+                allowed.append((idx, cmd))
+            continue
+
+        # --- Path B: generic Jenkins write detection ---
+        touches_jenkins = bool(_JENKINS_HOST_RE.search(cmd))
+        if not touches_jenkins:
+            continue
+        is_write = bool(_JENKINS_WRITE_VERB_RE.search(cmd)) or \
+                   bool(_JENKINS_CURL_DATA_RE.search(cmd))
+        if not is_write:
+            continue
+
+        # Classify against the carve-out.
+        targets_allowed_job = any(path in cmd for path in _JENKINS_ALLOWED_JOB_PATHS)
+        # The carve-out is ONLY for build triggers. The URL must end in
+        # `/buildWithParameters`. `/disable`, `/<N>/stop`, `/config.xml`,
+        # bare `/build` etc. on the same job path are still disallowed —
+        # `/build` (no `WithParameters`) doesn't accept the params we need
+        # and would silently skip them on real Jenkins.
+        is_build_trigger_endpoint = "/buildWithParameters" in cmd
+        # Verb: requests.post() / -X POST / curl --data (defaults to POST).
+        is_post = (
+            re.search(r"-X\s*['\"]?POST\b", cmd, re.IGNORECASE) is not None
+            or "requests.post(" in cmd
+            or (
+                _JENKINS_CURL_DATA_RE.search(cmd) is not None
+                and re.search(r"-X\s*['\"]?(?:PUT|DELETE|PATCH)", cmd, re.IGNORECASE) is None
+            )
+        )
+
+        if targets_allowed_job and is_post and is_build_trigger_endpoint:
+            # Cross-check repo allowlist for Create job only.
+            if JENKINS_DEVSITE_JOB_PATH_SUBSTR in cmd:
+                repo = extract_devsite_trigger_repo(cmd)
+                if repo is None or repo in SITE_DEPLOYABLE_REPOS:
+                    allowed.append((idx, cmd))
+                else:
+                    disallowed.append((idx, cmd))
+            else:
+                # Release job: no git_repo to cross-check — allow.
+                allowed.append((idx, cmd))
+        else:
+            disallowed.append((idx, cmd))
+    return {"allowed": allowed, "disallowed": disallowed}
+
 
 def parse_jsonl(path):
     """Yield (idx, parsed_entry) for each non-empty line in the JSONL."""
@@ -413,6 +625,102 @@ def analyze(path):
         print("     - OR the agent abandoned silently (audit failure)")
     else:
         print(f"  ✓ `gh pr create` invoked {len(gh_pr_create_invocations)}x")
+
+    # Tier 3: Jenkins-write audit (WORKFLOW.md invariant #5 carve-out).
+    # Four layered checks:
+    #   (a) No disallowed Jenkins writes (any verb to any non-devsite job).
+    #   (b) At most two allowed triggers per run: 0 (skipped), 1 (Phase A
+    #       completed + Phase B skipped), or 2 (full success). > 2 = violation.
+    #   (c) Triggers happened after the reviewer approved AND before
+    #       `gh pr create` — per the post-approve placement in step 12b-bis.
+    #       Order: Create trigger before Release trigger.
+    #   (d) The dev-site hostname (xxx.cc-test.site) appears in the
+    #       gh pr create `--body` excerpt when a trigger fired.
+    section("Jenkins-write audit (Tier 3 — invariant #5 carve-out)")
+    jenkins_writes = detect_jenkins_writes(bash_commands)
+    allowed_writes = jenkins_writes["allowed"]
+    disallowed_writes = jenkins_writes["disallowed"]
+
+    if disallowed_writes:
+        print(f"  ❌ {len(disallowed_writes)} DISALLOWED Jenkins write(s) — invariant #5 violation:")
+        for idx, cmd in disallowed_writes[:5]:
+            print(f"     line {idx}: {cmd[:160]}")
+        if len(disallowed_writes) > 5:
+            print(f"     ... and {len(disallowed_writes) - 5} more")
+    else:
+        print("  ✓ No disallowed Jenkins writes.")
+
+    if not allowed_writes:
+        print("  · No dev-site triggers in this run (acceptable for non-site repos / dry-skip).")
+    elif len(allowed_writes) > 2:
+        print(f"  ❌ {len(allowed_writes)} allowed triggers in one run — expected ≤ 2 (Create + Release).")
+        for idx, cmd in allowed_writes:
+            print(f"     line {idx}: {cmd[:160]}")
+    else:
+        n = len(allowed_writes)
+        print(f"  ✓ {n} dev-site trigger(s) — {'Phase A only' if n == 1 else 'Phase A + Phase B'} (line(s): {', '.join(str(i) for i, _ in allowed_writes)}).")
+
+        # SITE_DEPLOYABLE_REPOS is enforced inside detect_jenkins_writes —
+        # anything classified `allowed` already passed the allowlist. Report
+        # repo name for operator clarity (only applicable to Create trigger).
+        create_triggers = [(i, c) for i, c in allowed_writes if JENKINS_DEVSITE_JOB_PATH_SUBSTR in c
+                           or ("trigger_dev_site(" in c and "trigger_release_devsite(" not in c)]
+        release_triggers = [(i, c) for i, c in allowed_writes if JENKINS_RELEASE_JOB_PATH_SUBSTR in c
+                            or "trigger_release_devsite(" in c]
+        for idx, cmd in create_triggers:
+            repo = extract_devsite_trigger_repo(cmd)
+            if repo is not None:
+                print(f"     Create trigger (line {idx}): repo `{repo}` (in SITE_DEPLOYABLE_REPOS).")
+            else:
+                print(f"  ⚠️  Create trigger (line {idx}) lacks a compucorp/<repo> reference — allowlist check inconclusive.")
+        for idx, _cmd in release_triggers:
+            print(f"     Release trigger (line {idx}): _Release Dev Site (no repo to cross-check).")
+
+        # Order: Create before Release.
+        if create_triggers and release_triggers:
+            create_idx = create_triggers[0][0]
+            release_idx = release_triggers[0][0]
+            if release_idx < create_idx:
+                print(f"  ⚠️  Release trigger (line {release_idx}) precedes Create trigger (line {create_idx}) — wrong order.")
+            else:
+                print(f"  ✓ Create trigger precedes Release trigger.")
+
+        # Ordering vs reviewer and gh pr create: use the first trigger for the
+        # pre-pr-create check (both must be before gh pr create) and the last
+        # trigger for the post-reviewer check.
+        first_trigger_idx = allowed_writes[0][0]
+        last_trigger_idx = allowed_writes[-1][0]
+
+        last_reviewer_line = max(
+            (d["line"] for d in reviewer_dispatches if d["looks_reviewer"]),
+            default=None,
+        )
+        if last_reviewer_line is not None and first_trigger_idx < last_reviewer_line:
+            print(f"  ⚠️  First trigger at line {first_trigger_idx} precedes the reviewer dispatch at line {last_reviewer_line}.")
+            print("     WORKFLOW.md step 12b-bis runs after reviewer approval, before `gh pr create`.")
+        elif last_reviewer_line is not None:
+            print(f"  ✓ Triggers happened after reviewer dispatch (line {last_reviewer_line}).")
+
+        if gh_pr_create_invocations:
+            first_pr = gh_pr_create_invocations[0][0]
+            if last_trigger_idx > first_pr:
+                print(f"  ⚠️  Last trigger at line {last_trigger_idx} happens AFTER `gh pr create` at line {first_pr}.")
+                print("     The dev-site URL won't be in the PR body — placement is wrong.")
+            else:
+                print(f"  ✓ All triggers precede `gh pr create` (line {first_pr}).")
+
+        # Hostname-in-PR-body: scan all gh pr create body excerpts for a
+        # *.cc-test.site hostname reference.
+        hostname_re = re.compile(r"[a-z0-9-]+(?:\.public)?\.cc-test\.site", re.IGNORECASE)
+        body_has_hostname = any(
+            hostname_re.search(body) for _i, body in gh_pr_create_invocations
+        )
+        if gh_pr_create_invocations:
+            if body_has_hostname:
+                print("  ✓ Dev-site hostname referenced in PR body.")
+            else:
+                print("  ⚠️  Triggered a dev site but PR body has no `*.cc-test.site` reference.")
+                print("     WORKFLOW.md step 12b-bis requires the URL be embedded for human reviewers.")
 
     # Tier 3: tokens by tool (proxy for cost attribution).
     section("Token usage by tool (Tier 3, approximation)")
