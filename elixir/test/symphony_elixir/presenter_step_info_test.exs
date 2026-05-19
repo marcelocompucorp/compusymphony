@@ -88,8 +88,10 @@ defmodule SymphonyElixir.PresenterStepInfoTest do
       workspace_path = Path.join(workspace_root, identifier)
       File.mkdir_p!(workspace_path)
       # step is a string, not integer
-      File.write!(Path.join(workspace_path, ".symphony-status"),
-        ~s({"step": "three", "total": 10, "label": "Run tests"}))
+      File.write!(
+        Path.join(workspace_path, ".symphony-status"),
+        ~s({"step": "three", "total": 10, "label": "Run tests"})
+      )
 
       prev = Application.get_env(:symphony_elixir, :workspace_root)
       Application.put_env(:symphony_elixir, :workspace_root, workspace_root)

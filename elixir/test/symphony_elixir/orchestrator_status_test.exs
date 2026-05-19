@@ -1546,12 +1546,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   describe "compute_pending/2" do
     test "returns issues that are not running, not claimed, not blocked, and pass candidate checks" do
-      issue_a = %Issue{id: "a", identifier: "MT-10", title: "A", state: "Todo",
-                       assigned_to_worker: true}
-      issue_b = %Issue{id: "b", identifier: "MT-11", title: "B", state: "Todo",
-                       assigned_to_worker: true}
-      issue_c = %Issue{id: "c", identifier: "MT-12", title: "C", state: "Todo",
-                       assigned_to_worker: true}
+      issue_a = %Issue{id: "a", identifier: "MT-10", title: "A", state: "Todo", assigned_to_worker: true}
+      issue_b = %Issue{id: "b", identifier: "MT-11", title: "B", state: "Todo", assigned_to_worker: true}
+      issue_c = %Issue{id: "c", identifier: "MT-12", title: "C", state: "Todo", assigned_to_worker: true}
 
       state = %Orchestrator.State{
         running: %{"a" => %{identifier: "MT-10", issue: issue_a}},
@@ -1567,8 +1564,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
 
     test "returns empty list when all issues are running or claimed" do
-      issue_a = %Issue{id: "a", identifier: "MT-10", title: "A", state: "Todo",
-                       assigned_to_worker: true}
+      issue_a = %Issue{id: "a", identifier: "MT-10", title: "A", state: "Todo", assigned_to_worker: true}
 
       state = %Orchestrator.State{
         running: %{"a" => %{identifier: "MT-10", issue: issue_a}},
@@ -1582,8 +1578,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end
 
     test "excludes blocked todo issues" do
-      blocked = %Issue{id: "b", identifier: "MT-11", title: "Blocked", state: "Todo",
-                       assigned_to_worker: true, blocked_by: [%{state: "In Progress"}]}
+      blocked = %Issue{id: "b", identifier: "MT-11", title: "Blocked", state: "Todo", assigned_to_worker: true, blocked_by: [%{state: "In Progress"}]}
 
       state = %Orchestrator.State{
         running: %{},

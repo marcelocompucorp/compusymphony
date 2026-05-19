@@ -148,7 +148,10 @@ defmodule SymphonyElixir.Orchestrator do
               # Preflight refused: an `agent/*-fix` branch with unpushed
               # commits exists. Cleaning would lose work. Halt without
               # retry; operator must inspect/recover/clean manually.
-              Logger.warning("Orphan agent branch for issue_id=#{issue_id}; skipping retry. workspace=#{workspace} branch=#{branch}. Operator: recover or delete the workspace before re-applying agent:todo.")
+              Logger.warning(
+                "Orphan agent branch for issue_id=#{issue_id}; skipping retry. workspace=#{workspace} branch=#{branch}. Operator: recover or delete the workspace before re-applying agent:todo."
+              )
+
               complete_issue(state, issue_id)
 
             _ ->

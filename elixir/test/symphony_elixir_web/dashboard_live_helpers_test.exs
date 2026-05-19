@@ -75,7 +75,8 @@ defmodule SymphonyElixirWeb.DashboardLiveHelpersTest do
       long = String.duplicate("a", 80)
       result = DashboardLive.truncate_title_for_test(long)
       assert String.ends_with?(result, "…")
-      assert byte_size(result) <= 61  # 57 ASCII chars + 3-byte UTF-8 ellipsis
+      # 57 ASCII chars + 3-byte UTF-8 ellipsis
+      assert byte_size(result) <= 61
     end
 
     test "does not truncate a 60-char title" do
