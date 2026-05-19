@@ -11,23 +11,37 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        pending = Map.get(snapshot, :pending, [])
+
         %{
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
-            retrying: length(snapshot.retrying)
+            retrying: length(snapshot.retrying),
+            queued: length(pending)
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          pending: Enum.map(pending, &pending_entry_payload/1),
           agent_totals: snapshot.agent_totals,
           rate_limits: snapshot.rate_limits
         }
 
       :timeout ->
-        %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
+        %{
+          generated_at: generated_at,
+          counts: %{running: 0, retrying: 0, queued: 0},
+          pending: [],
+          error: %{code: "snapshot_timeout", message: "Snapshot timed out"}
+        }
 
       :unavailable ->
-        %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
+        %{
+          generated_at: generated_at,
+          counts: %{running: 0, retrying: 0, queued: 0},
+          pending: [],
+          error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}
+        }
     end
   end
 
@@ -109,9 +123,14 @@ defmodule SymphonyElixirWeb.Presenter do
         input_tokens: entry.agent_input_tokens,
         output_tokens: entry.agent_output_tokens,
         total_tokens: entry.agent_total_tokens
-      }
+      },
+      step_info: read_step_info(entry.identifier)
     }
   end
+
+  @doc false
+  @spec running_entry_payload_for_test(map()) :: map()
+  def running_entry_payload_for_test(entry), do: running_entry_payload(entry)
 
   defp retry_entry_payload(entry) do
     %{
@@ -122,6 +141,35 @@ defmodule SymphonyElixirWeb.Presenter do
       error: entry.error
     }
   end
+
+  defp pending_entry_payload(entry) do
+    %{
+      issue_id: entry.issue_id,
+      identifier: entry.identifier,
+      title: entry.title,
+      state: entry.state,
+      priority: entry.priority,
+      url: entry.url
+    }
+  end
+
+  defp read_step_info(identifier) when is_binary(identifier) do
+    root = Application.get_env(:symphony_elixir, :workspace_root) || Config.workspace_root()
+    path = Path.join([root, identifier, ".symphony-status"])
+
+    with {:ok, content} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(content),
+         %{"step" => step, "total" => total, "label" => label} <- decoded,
+         true <- is_integer(step) and step > 0,
+         true <- is_integer(total) and total > 0,
+         true <- is_binary(label) and label != "" do
+      %{step: step, total: total, label: label}
+    else
+      _ -> nil
+    end
+  end
+
+  defp read_step_info(_identifier), do: nil
 
   defp running_issue_payload(running) do
     %{
