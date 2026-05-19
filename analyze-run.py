@@ -711,7 +711,7 @@ def analyze(path):
 
         # Hostname-in-PR-body: scan all gh pr create body excerpts for a
         # *.cc-test.site hostname reference.
-        hostname_re = re.compile(r"[a-z0-9-]+(?:\.public)?\.cc-test\.site", re.IGNORECASE)
+        hostname_re = re.compile(r"[a-z0-9-]+(?:\.(?:public|docker))?\.cc-test\.site", re.IGNORECASE)
         body_has_hostname = any(
             hostname_re.search(body) for _i, body in gh_pr_create_invocations
         )
@@ -795,7 +795,7 @@ def section(title):
     print(f"\n--- {title} ---")
 
 
-AGENT_DONE_PREFIXES = ("success", "dry-run", "blocked-review", "blocked")
+AGENT_DONE_PREFIXES = ("success", "dry-run", "blocked-review", "blocked-verify", "blocked")
 AGENT_DONE_ISO8601 = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$"
 )
@@ -864,7 +864,7 @@ def main(argv):
             for f in findings:
                 print(f"  ⚠️ {f}")
             print(
-                "     Schema: '<success|dry-run|blocked-review|blocked> <ISO-8601> <issue.identifier>'"
+                "     Schema: '<success|dry-run|blocked-review|blocked-verify|blocked> <ISO-8601> <issue.identifier>'"
             )
     return 0
 

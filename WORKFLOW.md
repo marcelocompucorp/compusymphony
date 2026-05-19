@@ -541,10 +541,29 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    Before each iteration: if `<workspace>/.release-done` already exists, skip to B3 (restart-safe).
    ```python
    from repro_helpers import poll_until_released, wait_until_site_up
-   import pathlib, sys
+   import pathlib, sys, requests, os
    queue_url    = pathlib.Path("<workspace>/.release-queue").read_text().strip()
    devsite_host = pathlib.Path("<workspace>/.devsite-host").read_text().strip()
+   # Restart-safe: if the queue item was purged by Jenkins (~5 min after build
+   # starts), the queue URL returns 404. Read the cached build URL instead.
+   release_build_url_file = pathlib.Path("<workspace>/.release-build-url")
+   release_build_url = (
+       release_build_url_file.read_text().strip()
+       if release_build_url_file.exists() else None
+   )
+   # If we don't have a cached build URL yet, resolve and cache it now.
+   if release_build_url is None:
+       try:
+           r = requests.get(f"{queue_url}api/json",
+                            auth=(os.environ["JENKINS_USER"], os.environ["JENKINS_TOKEN"]),
+                            timeout=15)
+           if r.status_code != 404 and r.json().get("executable", {}).get("url"):
+               release_build_url = r.json()["executable"]["url"]
+               release_build_url_file.write_text(release_build_url)
+       except Exception:
+           pass  # poll_until_released will handle 404 with guidance
    result = poll_until_released(queue_url, site_url=devsite_host,
+                                build_url=release_build_url,
                                 timeout_s=90, raise_on_timeout=False)
    if result is None:
        print("Phase B still running — re-run to continue polling")
