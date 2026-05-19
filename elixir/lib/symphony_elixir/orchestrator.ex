@@ -248,6 +248,10 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
+
+      other ->
+        Logger.error("Unexpected result in maybe_dispatch: #{inspect(other)}")
+        state
     end
   end
 
@@ -492,7 +496,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec compute_pending_for_test([term()], term()) :: [term()]
+  @spec compute_pending_for_test([Issue.t()], State.t()) :: [Issue.t()]
   def compute_pending_for_test(issues, state), do: compute_pending(issues, state)
 
   defp issue_created_at_sort_key(%Issue{created_at: %DateTime{} = created_at}) do
