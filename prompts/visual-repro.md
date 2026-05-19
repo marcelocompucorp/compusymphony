@@ -554,3 +554,185 @@ Same as §8: a Playwright assertion that fires when the bug is GONE. For non-DOM
 | Drupal login fails (`get_devsite_drupal_admin_creds` fallback tried, still rejected) | Continue to 12c with `## Comments` note. Operator must inspect creds. |
 | Logged-in regression check fails (`assert_bug_fixed` fires anonymous but not logged-in) | **BLOCK** — `blocked-verify`. The fix breaks the authenticated user flow. |
 | `assert_staging_host` rejects the host | Defensive: should never happen (Jenkins only produces `*.cc-test.site`). If it does, treat as Jenkins console parse failure — continue to 12c with `## Comments` note. |
+
+## 10. Video recording for interactive-behavior bugs (§9b extension)
+
+Screenshots capture a single frame. When the bug's evidence is a **sequence of interactions** — what happens after a click, an animation completing, a dropdown closing — a screen recording is more informative. This section extends §9b Phase B to optionally capture `after.mp4` alongside `after.png`.
+
+### 10.1 Gate — when to record video
+
+Record video during §9b when the symptom is an **interactive-behavior sequence**: evidence requires showing what happens after one or more user actions.
+
+**Record video when:**
+- Click-away dismissal (element closes when clicking outside — e.g. IESBUILD-247)
+- Dropdown/popup open-and-close sequences
+- Form validation triggered by user input (focus/blur/keyup)
+- CSS transitions or animations (fade, slide, expand) where timing is the evidence
+- Multi-step flows where a mid-sequence state is the diagnostic artifact
+
+**Skip video when a screenshot is sufficient:**
+- CSS/color rendering issues (§8 path — a frame captures everything)
+- Static layout or visibility problems
+- Form field value display
+- Anything where a single frame fully shows the before/after difference
+
+**If in doubt, skip video.** Screenshots are the contract; video is supplementary evidence. A well-captioned `after.png` + descriptive `assert_bug_fixed` comment is always acceptable. Record video only when the sequence itself is what needs to be seen.
+
+**Phase A video:** skip by default. "Nothing happening" doesn't benefit from video; `before.png` is sufficient. Exception: if the broken state IS a misfiring animation, record Phase A too using the same pattern.
+
+### 10.2 Playwright recording and save
+
+Playwright records `.webm` video when `record_video_dir` is passed to `new_context()`. The context must be closed (not just the browser) to flush. Use `video.save_as()` to move to a named path — it waits for the video to be fully written:
+
+```python
+import shutil, subprocess, pathlib
+
+VIDEOS_DIR = pathlib.Path("videos")
+RECORD_VIDEO = True  # ← agent sets this per §10.1 gate
+
+# --- Video recording variant of §9b Phase B main() ---
+
+pathlib.Path("after.png").unlink(missing_ok=True)
+pathlib.Path("after.mp4").unlink(missing_ok=True)
+# Clean up any leftover .webm from prior runs:
+if VIDEOS_DIR.exists():
+    for f in VIDEOS_DIR.glob("*.webm"):
+        f.unlink()
+
+admin_user, admin_pass = get_devsite_drupal_admin_creds(ANONDB_URL_USED)
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+
+    # ── Phase B: first pass — interactive behavior (recorded if RECORD_VIDEO) ──
+    ctx_kwargs = {"viewport": DEFAULT_VIEWPORT}
+    if RECORD_VIDEO:
+        VIDEOS_DIR.mkdir(exist_ok=True)
+        ctx_kwargs["record_video_dir"] = str(VIDEOS_DIR)
+        ctx_kwargs["record_video_size"] = DEFAULT_VIEWPORT  # must match viewport
+
+    ctx = browser.new_context(**ctx_kwargs)
+    page = ctx.new_page()
+    page.goto(f"{DEVSITE_URL}/<bug-page-path>")
+    dismiss_cookie_banner(page)
+    compucorp_drupal_login_autodetect(page, admin_user, admin_pass, site=DEVSITE_URL)
+    reproduce_after_state(page)       # drive to the point of evidence
+    assert_bug_fixed(page)            # inverse assertion — must fire
+    page.screenshot(path="after.png", full_page=True)
+
+    if RECORD_VIDEO:
+        video = page.video             # capture reference BEFORE ctx.close()
+        ctx.close()                    # flush video to disk
+        video.save_as("after.webm")    # move to named path; blocks until written
+    else:
+        ctx.close()
+
+    # ── Phase B: logged-in regression check (separate non-recording context) ──
+    # Video is scoped to the first pass only — the login + re-nav flow adds noise.
+    ctx2 = browser.new_context(viewport=DEFAULT_VIEWPORT)
+    page2 = ctx2.new_page()
+    page2.goto(f"{DEVSITE_URL}/user/logout", wait_until="networkidle")
+    compucorp_drupal_login_autodetect(page2, admin_user, admin_pass, site=DEVSITE_URL)
+    page2.goto(f"{DEVSITE_URL}/<bug-page-path>", wait_until="networkidle")
+    dismiss_cookie_banner(page2)
+    assert_bug_fixed(page2)           # must also fire when logged in
+    ctx2.close()
+
+    browser.close()  # always after all contexts are closed
+```
+
+**Scope note:** video covers only the first `reproduce_after_state → assert_bug_fixed → screenshot` block. The logged-in regression check runs in a separate, non-recording context. This keeps the video focused on the interaction evidence and avoids 30+ second recordings that include login flows.
+
+### 10.3 Convert .webm → .mp4
+
+```python
+# Gate: only convert if ffmpeg is available
+if shutil.which("ffmpeg") is None:
+    print("ffmpeg not found — keeping after.webm, skipping mp4 conversion.")
+else:
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", "after.webm",
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-movflags", "+faststart",   # moov atom at front for streaming
+            "after.mp4",
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        print(f"ffmpeg conversion failed:\n{result.stderr.decode()}")
+        # after.webm is still available as fallback
+    else:
+        pathlib.Path("after.webm").unlink(missing_ok=True)  # clean up source
+```
+
+`-movflags +faststart` allows streaming before full download. `-y` overwrites existing output. `-c:a aac` is safe even if the source has no audio track (Playwright records silent video).
+
+### 10.4 Artifact policy (workspace-only)
+
+Same policy as §7 screenshots — videos are NOT committed to any git repo:
+- `videos/` and `after.mp4` land in `<workspace>/` only
+- NOT included in the `.agent-artifacts/<TICKET>/` artifact commit (the `git add .agent-artifacts/<TICKET>/` step in §7 must not pick up `videos/` or `*.mp4` — these are not inside `.agent-artifacts/`, so the scoped `git add` naturally excludes them)
+- NOT embedded in the PR body (no public hosting configured yet)
+
+The `after.png` screenshot is still the primary visual artifact embedded in the PR.
+
+### 10.5 PR body when video was recorded
+
+```markdown
+## After
+
+![After — <one-line fix description>](https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/after.png)
+
+A screen recording was also captured (`after.mp4`, workspace-only) but is not embedded — video hosting not yet configured. To view: retrieve from the Symphony workspace transcript.
+
+Steps to manually verify the interactive behaviour:
+1. <action that triggered the bug, e.g. "Open the member nav popup, then click anywhere outside it.">
+2. Confirm: <expected post-fix outcome, e.g. "The popup closes immediately.">
+```
+
+### 10.6 S3 upload and PR embedding
+
+Upload `after.mp4` to the artifacts bucket and embed in the PR body. Credentials are in env vars injected at runtime:
+
+```python
+import subprocess, os
+
+bucket = os.environ["SYMPHONY_ARTIFACTS_BUCKET"]       # compuco-agents-artifacts-916270379481-eu-west-2-an
+region = os.environ["SYMPHONY_ARTIFACTS_REGION"]       # eu-west-2
+key_id = os.environ["SYMPHONY_ARTIFACTS_KEY_ID"]
+secret = os.environ["SYMPHONY_ARTIFACTS_SECRET"]
+
+s3_key = f"{TICKET}/after.mp4"
+public_url = f"https://{bucket}.s3.{region}.amazonaws.com/{s3_key}"
+
+result = subprocess.run(
+    [
+        "aws", "s3", "cp", "after.mp4",
+        f"s3://{bucket}/{s3_key}",
+        "--region", region,
+        "--content-type", "video/mp4",
+    ],
+    env={**os.environ, "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret},
+    capture_output=True,
+)
+if result.returncode != 0:
+    print(f"S3 upload failed: {result.stderr.decode()}")
+    # Fall back to workspace-only + manual verification note in PR body
+else:
+    print(f"Video uploaded: {public_url}")
+```
+
+PR `## After` section when upload succeeds:
+
+```markdown
+## After
+
+![After — <one-line fix description>](https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/after.png)
+
+<video src="https://compuco-agents-artifacts-916270379481-eu-west-2-an.s3.eu-west-2.amazonaws.com/<TICKET>/after.mp4" controls width="800"></video>
+```
+
+GitHub renders `<video>` tags in PR descriptions. The URL is permanent (public-read bucket policy, no expiry).
