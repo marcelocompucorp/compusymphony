@@ -854,3 +854,15 @@ When blocked, the Jira comment should state: what's missing, why it blocks the w
 | `blocked` | Generic blocker (Blockers section: repo not on allowlist, missing credentials, infra-touching scope, irreproducible bug, uncertain classification at step 3.2). | Blockers section |
 
 Any other prefix, missing fields, malformed timestamp, or mismatched `issue.identifier` is a workflow bug and must be flagged by `analyze-run.py`. Operators rely on these strings to triage runs at a glance; do not invent new prefixes without updating this schema first.
+
+## Step reporting
+
+At the start of **each numbered step**, before doing any work for that step, write the following file to the workspace root:
+
+```bash
+echo '{"step": N, "total": T, "label": "Step heading text"}' > .symphony-status.tmp && mv .symphony-status.tmp .symphony-status
+```
+
+Where `N` is the current step number (1-based), `T` is the total number of steps, and `"Step heading text"` is the exact heading of that step. The atomic rename (write to `.tmp` then `mv`) prevents partial reads.
+
+This file is read by the Symphony dashboard to show real-time progress. It costs zero tokens.
