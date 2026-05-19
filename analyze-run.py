@@ -795,7 +795,11 @@ def section(title):
     print(f"\n--- {title} ---")
 
 
-AGENT_DONE_PREFIXES = ("success", "dry-run", "blocked-review", "blocked-verify", "blocked")
+AGENT_DONE_PREFIXES = (
+    "success", "success-dual", "success-upstream-only",
+    "dry-run",
+    "blocked-review", "blocked-verify", "blocked",
+)
 AGENT_DONE_ISO8601 = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$"
 )
@@ -864,7 +868,7 @@ def main(argv):
             for f in findings:
                 print(f"  ⚠️ {f}")
             print(
-                "     Schema: '<success|dry-run|blocked-review|blocked-verify|blocked> <ISO-8601> <issue.identifier>'"
+                "     Schema: '<success|success-dual|success-upstream-only|dry-run|blocked-review|blocked-verify|blocked> <ISO-8601> <issue.identifier>'"
             )
     return 0
 

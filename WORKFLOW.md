@@ -247,7 +247,7 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 - **Label handling depends on outcome:**
   - **Dry-run SUCCESS** (reviewer approved at any round): remove BOTH `agent:todo` AND `agent:dry-run` labels via the Atlassian MCP. **This is the only Jira mutation permitted in dry-run mode**, and exists to prevent the post-completion retry storm.
   - **Dry-run BLOCKED** (reviewer rejected at N=3, or any other blocker per step 12b / the Blockers section): leave BOTH labels ON for human triage. The block reason goes into `<workspace>/dry-run-summary.md` ONLY — NOT into a Jira comment. If the operator wants to share the block reason on Jira, they post it manually after reviewing the workspace.
-- Leave the local branch + commits in the workspace `./repo/` for human inspection.
+- Leave the local branch + commits in the workspace `./repo-client/` (and `./repo-upstream/` if dual-target) for human inspection.
 - At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>..HEAD`), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
   - (f) Visual-repro outcome — one of:
     - `committed-repro` (script ran, assertion fired, before.png at <workspace>/before.png)
@@ -283,7 +283,33 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 2. **Frame the investigation** with `superpowers:systematic-debugging`. Apply `prompts/INVESTIGATION.md` adapted for a bug-fix (not an incident) — focus on understanding behavior and reproducing, not correlating outage evidence.
 
-3. **Pick the target repo from the allowlist.** If the ticket doesn't clearly name a site/component on the allowed list, stop here and comment on Jira.
+3. **Pick the target repo(s) from the allowlist** based on the bug's ROOT CAUSE location.
+
+   **Step 3.1 — preliminary classification from the ticket alone.** Use the ticket's project prefix as the FIRST hint (`IESBUILD-*` → `ies`, `MMMM-*` → `mm`, etc.). This identifies the originating **client repo**. It does NOT yet determine whether the fix lives in the client or upstream.
+
+   **Step 3.2 — refine after preliminary investigation (steps 4–6).** Once you've cloned the client repo and looked at the symptom, classify the bug:
+
+   - **Client-exclusive** — root cause is in `sites/all/themes/custom/<site>/`, `sites/all/modules/{custom,features}/<site>/`, or another path that does NOT exist in other clients. Target: ONLY the client repo. Proceed with the standard single-repo flow (steps 5 onwards use `./repo-client/` only).
+
+   - **Upstream-rooted** — root cause is in `profiles/compuclient/...` (vendored parent code) OR in any Compucorp-maintained module/extension outside `sites/all/.../<site>/`. These edits are **ephemeral** — deleted wholesale when the client upgrades its Compuclient profile. Two targets:
+     - **Primary (PR target):** the corresponding upstream repo. Mapping examples:
+       - `profiles/compuclient/themes/contrib/compu_bs5/` → `compucorp/compu_bs5`
+       - `profiles/compuclient/modules/contrib/ssp_core/` → `compucorp/ssp_core`
+       - `profiles/compuclient/modules/contrib/core_website/` → `compucorp/core-website` (**note**: Drupal module directories use underscores `core_website`; the GitHub repo uses a hyphen `core-website` — same module, different separator conventions)
+       - `profiles/compuclient/modules/contrib/<any-maintained-ext>/` → `compucorp/<any-maintained-ext>` if on the allowlist
+       - `profiles/compuclient/` (profile-level) → `compucorp/compuclient`
+       - Any shared CiviCRM extension or contrib module Compucorp maintains → `compucorp/<name>` if on the allowlist; otherwise check `compuco_projects.yml` (see below) before blocking.
+       - Other `profiles/compuclient/modules/contrib/<name>/` NOT on the static allowlist → **check `compuco_projects.yml` in `compucorp/compuclient` before blocking:**
+         ```bash
+         gh api "repos/compucorp/compuclient/contents/compuco_projects.yml" \
+           --jq '.content' | base64 -d | grep -i "<name>"
+         ```
+         If found → proceed with the upstream PR to `compucorp/<name>`. If not found → STOP and ask.
+     - **Secondary (QA-branch target):** the originating client repo (from step 3.1). Branch name `qa-<ticket-key>` (e.g., `qa-IESBUILD-247`). NO PR is opened on the secondary; only a branch push for QA-team testing.
+
+   - **Uncertain** — root cause is not clearly client-exclusive or upstream-rooted after investigation. **STOP. Do NOT guess.** Post a Jira comment explaining what you found, why the classification is ambiguous, and what additional information would resolve it. Set `AGENT_DONE = blocked <timestamp> <TICKET>`. A misclassification that opens a PR in the wrong repo is harder to undo than a stopped run.
+
+   Use `gh api "repos/<owner>/<repo>" --jq .default_branch` at runtime to confirm the default branch for each target repo.
 
 3a. **Verify the repo is the active upstream, not a read-only mirror (mandatory).** Some Compucorp repos under `compucorp/*` started as forks (when Compucorp carried local patches) and reverted to mirrors after the patches were merged upstream. Pushing to a mirror is wasted work — production won't see the change.
 
@@ -350,11 +376,40 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 4. **Investigate with what fits the symptom.** Loki for logs, GitHub for recent changes, Netdata/Tempo/CloudWatch as relevant. Use `prompts/TOOLS.md` for credentials and access patterns. Don't run every tool — pick by signal.
 
-5. **Clone the target repo** into `./repo/` in the workspace.
+5. **Clone the target repo(s).**
+
+   - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Create a convenience symlink: `ln -sfn ./repo-client ./repo-upstream` so that step references to `./repo-upstream/` resolve to the same clone. The run is single-target when `realpath ./repo-upstream` == `realpath ./repo-client`.
+
+   - **Upstream-rooted bugs (dual-target):** clone BOTH:
+     - `./repo-upstream/` ← `compucorp/<upstream-repo>` (the PR target)
+     - `./repo-client/` ← `compucorp/<client-repo>` (the QA-branch target; BASE_COMMIT = client's deployed tag from step 3b Mongo lookup)
+
+     For BASE_COMMIT in `./repo-upstream/`: step 3b's Mongo lookup does NOT apply (the upstream repo isn't deployed as a standalone site). Use the upstream repo's default branch tip, OR an active RC branch if one exists (see RC detection below). For `./repo-client/`: step 3b's Mongo lookup applies as usual.
+
+     **RC branch detection (upstream repos):**
+     ```bash
+     gh api "repos/<upstream>/branches" --jq '.[].name' | grep -E \
+       '^7\.x-[0-9]+\.[0-9]+(\.[0-9]+|-(patch|alpha|beta)[.0-9]+)*-rc$'
+     ```
+     Expect 0 or 1 match. If 0 → use default branch tip. If 1 → target the RC branch as BASE_COMMIT for `./repo-upstream/`. If ≥2 → log WARNING and use default branch tip; note the unexpected RC state in PR `## Comments`.
+
+   All subsequent steps reference `./repo-upstream/` as the primary workspace (where the fix is authored) and `./repo-client/` as the secondary (where the QA branch lands).
 
 6. **Write `./plan.md`** with `superpowers:writing-plans`. Small, sequential, testable steps.
 
 7. **Read the playbooks** that apply: `shared-development-guide.md` + `unit-testing-guide.md` always; civicrm/extension when touching that surface.
+
+7a. **Pattern-reuse confirmation (after `./plan.md` is written, before implementation).**
+
+   **For upstream-rooted bugs (classified at step 3.2):** confirm via `grep -rn`:
+   1. The new behavior you're about to add in `./repo-upstream/` does NOT already exist there in a separate location. If it does, extend the existing handler instead of writing parallel code.
+   2. The same behavior does NOT exist as a per-site re-implementation in `./repo-client/sites/all/themes/custom/*/` or `./repo-client/sites/all/modules/{custom,features}/*/` — if it does, the per-site implementation can be removed once the upstream fix ships.
+
+   **For client-exclusive bugs (classified at step 3.2):** confirm via `grep -rn`:
+   1. The new behavior you're about to add in `./repo-client/sites/all/themes/custom/<site>/` or equivalent does NOT have an equivalent handler in `./repo-client/profiles/compuclient/...` (vendored parent code).
+   2. **If it DOES**: re-classify as upstream-rooted. Restart from step 5 with the dual-clone setup — do NOT implement a per-site duplicate of a vendored upstream handler.
+
+   This confirmation catches the IESBUILD-247-shaped failure mode: agent writes a new per-site JS behavior (`header-clickaway.js`) duplicating an existing upstream handler (`compu_bs5/js/nested-dropdown.js:100-110`) instead of extending the upstream module.
 
 8. **Implement with `superpowers:test-driven-development`.** Write a failing test that captures the bug. Make it pass with the smallest reasonable change.
 
@@ -367,51 +422,106 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     When both conditions hold:
 
     10a. Read `prompts/visual-repro.md`.
-    10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo/`).
+    10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo-client/` or `./repo-upstream/`).
     10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`. If the substantive diff is CSS-only per `prompts/visual-repro.md` §8's gate, ALSO add the after-state pass — see §8 for the code fixture, the inject-after-reproduce ordering, and the `assert_bug_fixed` contract.
     10d. Run: `cd <workspace> && python3 repro.py`. Outputs `<workspace>/before.png` on success (and `<workspace>/after.png` when §8 applies). (The `cd` is required because `page.screenshot(path="...")` is cwd-relative.)
-    10e. If exit 0 AND `before.png` exists: copy `repro.py`, `before.png`, and `after.png` (if present) into the client repo on the agent branch:
+    10e. **Gitignore policy (v1.12+, mandatory):** Before committing any artifacts, ensure `.agent-artifacts/` is present in the **client repo's** `.gitignore`. Check and add if missing:
 
     ```bash
-    cd <workspace>/repo
-    mkdir -p .agent-artifacts/{{ issue.identifier }}/
-    cp ../before.png .agent-artifacts/{{ issue.identifier }}/before.png
-    if [ -f ../after.png ]; then
-      cp ../after.png .agent-artifacts/{{ issue.identifier }}/after.png
+    cd <workspace>/repo-client
+    if ! grep -qF '.agent-artifacts/' .gitignore 2>/dev/null; then
+      echo '.agent-artifacts/' >> .gitignore
+      git add .gitignore
+      git commit -m "{{ issue.identifier }}: gitignore agent scaffolding"
     fi
-    git add .agent-artifacts/{{ issue.identifier }}/
-    git commit -m "{{ issue.identifier }}: add visual reproduction evidence"
     ```
 
-    Only the screenshots are committed. The reproduction script and its helpers stay in `<workspace>/` for the operator's audit (and persist in Claude Code's per-session JSONL transcript at `~/.claude/projects/`). They are operator-internal tooling, not artifacts the client repo's maintainers need.
+    With `.agent-artifacts/` gitignored, screenshots are **workspace-only** — they cannot be committed. This is correct by design. The `git add .agent-artifacts/` step from earlier policy versions (v1.5–v1.11) is **removed**. Screenshots captured to `<workspace>/before.png` and `<workspace>/after.png` stay in the workspace for operator audit and persist in the JSONL transcript; they do NOT enter the client repo's git history.
 
-    Then PR `## Before` reads (markdown image syntax with the agent-branch raw URL — `<owner>/<repo>` from step 3):
+    If exit 0 AND `before.png` exists: screenshots are available at `<workspace>/before.png`. They will be referenced in the PR body using the dev-site URL (if 12b-bis ran) or the manual-verification block (if 12b-bis was skipped).
 
+    PR `## Before` (when 12b-bis ran or dev-site URL is available):
     ```markdown
-    ![Before — <one-line bug summary>](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/before.png)
-
-    Reproduction captured against `<staging URL>` (use the `SITE` constant from `repro.py`, e.g. `https://ies2.cc-staging.site`) via a Playwright assertion that fired before the screenshot was taken.
+    Reproduction captured against `<staging URL>` via a Playwright assertion that fired before the screenshot was taken. Visual evidence: workspace `before.png` (see dev-site Phase A below).
     ```
 
-    If `after.png` was also captured (CSS-only diff per §8), PR `## After` reads:
-
+    PR `## Before` (when 12b-bis was skipped):
     ```markdown
-    ![After — <one-line description of the fix>](https://github.com/<owner>/<repo>/raw/agent/{{ issue.identifier }}-fix/.agent-artifacts/{{ issue.identifier }}/after.png)
+    ## Manual verification required
 
-    Captured by injecting the compiled equivalent of the SCSS change via `page.add_style_tag()` on the same staging URL — the fix is not yet deployed; injection simulates the post-deploy CSS state. The inverse assertion (`assert_bug_fixed`) fired before screenshot.
+    Steps to reproduce: <URL>, <preconditions>, <what to look for>
     ```
 
-    If `after.png` was NOT captured (diff includes JS/PHP/behavior files), PR `## After` uses the manual-verification block from `visual-repro.md` §8.
+    If `after.png` was captured (§8 CSS-only or 12b-bis Phase B), PR `## After` references the dev-site URL or notes the workspace capture.
 
     If exit non-zero OR `before.png` missing: PR body gets `## Manual verification required` with explicit reproduction steps (URL, preconditions, what to look for).
 
-    10f. **Artifact lifecycle note (operator-facing):** artifacts land in master after PR merge (~1–2 MB per UI ticket; doubled when §8 captures `after.png`). The branch-name raw URL works during PR review and breaks after branch deletion; artifacts remain in master's git history at the merge commit indefinitely. This is intentional for v1.6 — the GitHub user-attachments CDN requires `user_session` cookie auth (cli/cli#13256, community#29993) and is not accessible to the bot PAT, so asymmetric storage would require manual per-PR upload. Object storage (S3, Cloudflare R2) is the cleaner alternative for v2 if repo bloat becomes material.
+    10f. **Artifact lifecycle note (v1.12+):** Screenshots stay in the workspace and the JSONL transcript — they do NOT enter the client repo's git history. This avoids accumulating ~1–2 MB of CI tooling artifacts per ticket in client repo history (per Compucorp's engineering feedback on PR #229). If the team later wants permanent storage with public URLs, the correct solution is an S3/Cloudflare R2 bucket accessible to the bot PAT — that is the v2 path.
 
-11. **Commit and push.** Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`.
+11. **Commit and push.**
+
+   **Single-target (client-exclusive):** Branch `agent/{{ issue.identifier }}-fix` in `./repo-client/` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`. Push to the client repo remote.
+
+   **Dual-target (upstream-rooted):** Two branches, two pushes, in this order:
+
+   **11a. Propagate the fix to the client's vendored copy** (`./repo-client/`):
+
+   1. Derive the target directory in the client repo:
+      ```bash
+      KEY_FILE=$(git -C ./repo-upstream show HEAD --name-only \
+        | grep -v '^commit\|^Author\|^Date\|^$\|^    ' | head -1)
+      find ./repo-client/profiles/compuclient -name "$(basename "$KEY_FILE")" \
+        -maxdepth 6 2>/dev/null
+      ```
+      - One match → derive `APPLY_DIR` from the match path minus the filename.
+      - Zero matches → STOP; post Jira comment describing the mismatch.
+      - Multiple matches → STOP; post Jira comment asking which path is correct.
+
+   2. Run patch propagation:
+      ```bash
+      git -C ./repo-upstream diff HEAD~1..HEAD > /tmp/upstream.patch
+      git -C ./repo-client checkout -b qa-{{ issue.identifier }}
+      git apply --directory="$APPLY_DIR" --check /tmp/upstream.patch
+      ```
+      - **`--check` passes** (expected common case): apply the patch, commit:
+        ```bash
+        git apply --directory="$APPLY_DIR" /tmp/upstream.patch
+        git -C ./repo-client add -p  # stage the vendored-copy changes
+        git -C ./repo-client commit -m \
+          "{{ issue.identifier }}: propagate upstream fix for QA testing"
+        ```
+        Set `PROPAGATION_STATUS=byte-identical`.
+
+      - **`--check` fails**: attempt 3-way merge:
+        ```bash
+        git apply --directory="$APPLY_DIR" --3way /tmp/upstream.patch
+        ```
+        If 3way succeeds: commit, set `PROPAGATION_STATUS=context-resolved`. Note in Jira comment later.
+        If 3way also fails: skip QA branch; set `PROPAGATION_STATUS=skipped`; note `AGENT_DONE` will be `success-upstream-only` if everything else passes.
+
+   3. When `PROPAGATION_STATUS != skipped`: push the QA branch:
+      ```bash
+      git push <client-remote> qa-{{ issue.identifier }}
+      ```
+      **This push must happen before Phase B (the Jenkins dev-site deploy needs the branch on the remote).**
+
+   **11b. Push the upstream branch** (`./repo-upstream/`):
+   Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT` per invariant 3). Commit message starts with `{{ issue.identifier }}:`. Push to the upstream repo remote. The reviewer needs this branch for the diff.
 
 12. **Independent code review + open the PR (single coupled step).** This pair is intentionally NOT split — see invariant 9.
 
-   12a. **Dispatch code reviewer** via `Task` tool (`subagent_type: Plan`, `model: opus`). The reviewer reads `prompts/code-reviewer.md` and emits structured JSON per `prompts/code-reviewer-schema.json`. Pass it: ticket identifier+title+description+filtered comments, contents of `<workspace>/plan.md`, output of `git diff <default-branch>..HEAD`, workspace path. If this is round N>1, also pass `prior_findings` (the `findings` array from `<workspace>/review-result-r<N-1>.json`). Save its output to `<workspace>/review-result-r<N>.json`.
+   12a. **Dispatch code reviewer** via `Task` tool (`subagent_type: Plan`, `model: opus`). The reviewer reads `prompts/code-reviewer.md` and emits structured JSON per `prompts/code-reviewer-schema.json`.
+
+   Pass it: ticket identifier+title+description+filtered comments, contents of `<workspace>/plan.md`, workspace path. If this is round N>1, also pass `prior_findings` (the `findings` array from `<workspace>/review-result-r<N-1>.json`). Save its output to `<workspace>/review-result-r<N>.json`.
+
+   **Diff to pass:**
+   - **Single-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-client/`
+   - **Dual-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-upstream/` (the upstream PR's diff). The client QA branch diff is byte-identical (or close after 3-way) — do NOT send it separately; the reviewer section 14 verifies only that the QA branch push happened.
+
+   **Additional v1.12 inputs to pass:**
+   - `workspace_layout`: `"single"` or `"dual"`
+   - `target_repo_type`: `"upstream"` (dual-target runs) or `"client"` (single-target runs)
+   - `propagation_status`: `"byte-identical"`, `"context-resolved"`, or `"skipped"` (dual-target only; omit for single-target)
 
    12b. **Interpret the verdict** (loop per invariant 9):
    - `approve` → continue to 12c
@@ -419,6 +529,8 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    - `reject` and N == 3 → STOP. Post Jira comment quoting `review-result-r3.json.findings` (BLOCKERs only) and the rounds attempted. Leave `agent:todo` label ON. Write `<workspace>/AGENT_DONE` with content: `blocked-review <ISO-8601-timestamp> {{ issue.identifier }}`. Exit without opening PR.
 
    12b-bis. **Two-phase dev-site verification** (mandatory if the target repo is in `SITE_DEPLOYABLE_REPOS` per invariant #5; skip with a one-line `## Comments` note otherwise — e.g. extension, theme, or infra repo). Runs ONLY after 12b returned `verdict: approve`; the reviewer evaluates code, the dev site evaluates the deployed result.
+
+   **Dual-target note:** For upstream-rooted runs, both phases use `./repo-client/` as the deploy target — because the bug exhibits on the client site, not on the upstream extension in isolation. The `qa-<TICKET>` branch in `./repo-client/` must be pushed (step 11a) before Phase B triggers. If `PROPAGATION_STATUS == skipped`, Phase B is also skipped (no QA branch to deploy); `AGENT_DONE` becomes `success-upstream-only` after the upstream PR opens.
 
    **Skip guard — doc-only diffs:** Run `git diff --stat <default-branch>..HEAD` and if every changed path matches `*.md`, `*.txt`, or is comment-only, skip 12b-bis with `## Comments` note: "Dev-site step skipped: doc-only diff." Saves Jenkins on trivial PRs.
 
@@ -519,8 +631,15 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    **Goal:** deploy the agent's fix branch to the same dev site (same data, no DB reimport) and assert the bug is gone.
 
    **B1. Push the fix tag and trigger Phase B (fast, one-shot):**
+
+   For **single-target** runs, the fix tag points to the agent branch HEAD in `./repo-client/`.
+   For **dual-target** runs, the fix tag is created at the HEAD of the `qa-<TICKET>` branch in `./repo-client/` (already pushed in step 11a) — the dev site needs the client-repo copy of the fix, not the upstream repo.
+
    ```bash
-   git tag agent-{{ issue.identifier }}-fix HEAD
+   # Single-target: tag current HEAD in repo-client
+   # Dual-target: tag qa-<TICKET> HEAD in repo-client
+   cd <workspace>/repo-client
+   git tag agent-{{ issue.identifier }}-fix HEAD   # or: git tag ... qa-{{ issue.identifier }}
    git push origin agent-{{ issue.identifier }}-fix
    ```
    ```python
@@ -576,7 +695,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **B3. Capture after.png:**
 
-   Run `visual-repro.md §9b`: `assert_bug_fixed` → capture `after.png`. Save to `<workspace>/after.png` and copy to `repo/.agent-artifacts/{{ issue.identifier }}/after.png`. Commit on the agent branch.
+   Run `visual-repro.md §9b`: `assert_bug_fixed` → capture `after.png`. Save to `<workspace>/after.png`. Per the v1.12 gitignore policy (step 10e), screenshots are workspace-only — do NOT commit to the repo.
 
    If `assert_bug_fixed` **fails** (assertion didn't fire): **BLOCK** the PR. Post a Jira blocker comment quoting (a) the reviewer's approval, (b) both Jenkins build numbers + dev-site URL, (c) the assertion failure, and (d) likely cause: "DB or data state may not reproduce the bug on the dev site." Leave `agent:todo` ON. Write `<workspace>/AGENT_DONE` with prefix `blocked-verify`. Skip 12c entirely.
 
@@ -609,13 +728,41 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    When 12b-bis runs successfully, `visual-repro.md` §8's inject-based `after.png` path is **superseded** — do not run it. The §8 path only fires when 12b-bis was skipped AND the diff is CSS-only.
 
-   12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round AND (12b-bis ran to completion OR 12b-bis was skipped per its own gates — but NEVER if 12b-bis blocked). Never run `gh pr create` directly without those rounds having been the final actions; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). Target the repo's default branch (`master` for `ase`, the current `7.x-N.x` major-version branch for `compuclient`). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
+   12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round AND (12b-bis ran to completion OR 12b-bis was skipped per its own gates — but NEVER if 12b-bis blocked). Never run `gh pr create` directly without those rounds having been the final actions; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
 
-13. **Post the PR link as a Jira comment** via the Atlassian MCP. One concise comment, e.g.: `PR: https://github.com/... — please review.`
+   **Single-target:** PR targets the client repo's default branch (`master` for most client repos, or the RC branch if one is active).
+
+   **Dual-target (upstream-rooted):** PR targets the **upstream repo**'s default branch (or active RC branch, per step 5 RC detection). `gh pr create` runs from inside `<workspace>/repo-upstream/`. No PR is opened on the client repo — only the `qa-<TICKET>` branch push (already done in step 11a).
+
+   When `PROPAGATION_STATUS == skipped` (3-way merge failed): still open the upstream PR. Note in PR `## Comments`: _"Client QA branch propagation failed — vendored copy has diverged. See Jira comment for operator instructions."_ `AGENT_DONE` will be `success-upstream-only`.
+
+13. **Post the PR link + QA branch as a Jira comment** via the Atlassian MCP.
+
+   **Single-target:** one concise comment, e.g.: `PR: https://github.com/... — please review.`
+
+   **Dual-target:** single comment with both links:
+
+   > _Upstream PR (the actual fix): https://github.com/compucorp/<upstream>/pull/<N>_
+   >
+   > _Client QA branch (for QA team testing): https://github.com/compucorp/<client>/tree/qa-{{ issue.identifier }}_
+   >
+   > _Workflow: QA team checks out the client QA branch on a test deployment, validates the fix in client context, then approves the upstream PR for merge. Once the upstream PR merges and is included in the next Compuclient release, this ticket can close as fixed-upstream._
+
+   When `PROPAGATION_STATUS == skipped`:
+
+   > _Upstream PR (the actual fix): https://github.com/compucorp/<upstream>/pull/<N>_
+   >
+   > _Client QA branch: propagation failed (`git apply --3way` conflict — vendored copy has diverged from upstream). Manual action: (a) cherry-pick the upstream commit onto a fresh `qa-{{ issue.identifier }}` branch resolving the conflict by hand, or (b) wait for the upstream PR to merge into the next Compuclient release and the fix will propagate automatically._
 
 14. **Remove the `agent:todo` label** from the ticket via the Atlassian MCP. This signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll. If you blocked instead of completing, leave the label on so a human can decide whether to retry; document the blocker in the Jira comment.
 
-15. **Write `AGENT_DONE` and stop.** Create `<workspace>/AGENT_DONE` with content: `success <ISO-8601-timestamp> {{ issue.identifier }}`. Do not transition the Jira status yourself — leave that to the human reviewing the PR.
+15. **Write `AGENT_DONE` and stop.**
+
+   - **Single-target:** `success <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Dual-target (QA branch pushed successfully):** `success-dual <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Dual-target (propagation failed, upstream PR only):** `success-upstream-only <ISO-8601-timestamp> {{ issue.identifier }}`
+
+   Do not transition the Jira status yourself — leave that to the human reviewing the PR.
 
 ## Blockers
 
@@ -630,7 +777,7 @@ When blocked, the Jira comment should state: what's missing, why it blocks the w
 
 ## AGENT_DONE schema
 
-`AGENT_DONE` is a single-line sentinel file with exactly three space-separated fields and exactly one of four allowed prefixes:
+`AGENT_DONE` is a single-line sentinel file with exactly three space-separated fields and exactly one of the allowed prefixes:
 
 ```
 <prefix> <ISO-8601-timestamp> <issue.identifier>
@@ -638,10 +785,12 @@ When blocked, the Jira comment should state: what's missing, why it blocks the w
 
 | Prefix | Meaning | Written by |
 |---|---|---|
-| `success` | Routine ran to completion, PR opened, Jira commented, label removed. | Step 15 |
+| `success` | Single-target run: PR opened, Jira commented, label removed. | Step 15 |
+| `success-dual` | Dual-target run: upstream PR opened AND client QA branch pushed AND dual-link Jira comment posted. | Step 15 |
+| `success-upstream-only` | Dual-target run: upstream PR opened successfully, but client QA branch push failed (3-way merge conflict on patch propagation). Jira comment includes operator instructions for manual QA branch creation. | Step 15 |
 | `dry-run` | DRY-RUN OVERRIDE ran through step 12a, reviewer approved, no external side effects. | DRY-RUN OVERRIDE block |
 | `blocked-review` | Reviewer subagent rejected at N=3 (invariant #9 loop limit). | Step 12b |
 | `blocked-verify` | Reviewer approved, dev-site deploy succeeded, but `assert_bug_fixed` did not fire — typically the fresh anondb lacks the data state that triggers the bug. Operator decides whether to seed data + retry, push the PR manually after sanity-checking the dev site, or widen anondb selection. | Step 12b-bis |
-| `blocked` | Generic blocker (Blockers section: repo not on allowlist, missing credentials, infra-touching scope, irreproducible bug). | Blockers section |
+| `blocked` | Generic blocker (Blockers section: repo not on allowlist, missing credentials, infra-touching scope, irreproducible bug, uncertain classification at step 3.2). | Blockers section |
 
 Any other prefix, missing fields, malformed timestamp, or mismatched `issue.identifier` is a workflow bug and must be flagged by `analyze-run.py`. Operators rely on these strings to triage runs at a glance; do not invent new prefixes without updating this schema first.

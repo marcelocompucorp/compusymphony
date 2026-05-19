@@ -30,9 +30,10 @@ inputs explicitly listed below.
 2. **Plan** — contents of `<workspace>/plan.md` (the bite-sized plan written
    by the `superpowers:writing-plans` skill before implementation).
 3. **Diff** — full output of `git diff <default-branch>..HEAD` from inside
-   `<workspace>/repo`. Read the file headers carefully: changes to `.tpl`,
-   `.module`, `info.xml`, `*.install` files have different review semantics
-   than pure PHP changes.
+   `<workspace>/repo-client` (single-target) or `<workspace>/repo-upstream`
+   (dual-target upstream PR). Read the file headers carefully: changes to
+   `.tpl`, `.module`, `info.xml`, `*.install` files have different review
+   semantics than pure PHP changes.
 4. **Workspace path** — so you can use `Read`/`Grep`/`Glob` to inspect files
    in their full context (not just the diff hunks). The diff alone is
    often insufficient to judge intent.
@@ -41,6 +42,15 @@ inputs explicitly listed below.
    parent agent has attempted to address those findings. You MUST evaluate
    each prior finding by id and report its current status in your output's
    `prior_findings_addressed` field (see "Output schema" below).
+6. **`workspace_layout`** (v1.12+, optional) — `"single"` or `"dual"`. `"dual"` means
+   the run is upstream-rooted: the diff is against `<workspace>/repo-upstream`
+   and a `qa-<TICKET>` branch was pushed to the client repo. Absent = `"single"`.
+7. **`target_repo_type`** (v1.12+, optional) — `"upstream"` or `"client"`. `"upstream"`
+   means the PR is against a Compucorp shared repo (`compu_bs5`, `ssp_core`,
+   `core-website`, `compuclient`, etc.). Absent = `"client"`.
+8. **`propagation_status`** (v1.12+, optional) — `"byte-identical"`, `"context-resolved"`,
+   or `"skipped"`. Describes the result of `git apply --check` / `--3way` when
+   propagating the upstream patch to the client's vendored copy. Absent = N/A (single-target).
 
 ## What you must check (in this priority order)
 
@@ -112,6 +122,14 @@ For Drupal 7 + CiviCRM code specifically:
   CiviCRM extensions often have NO test infrastructure — see `## Comments`
   section of PR for the "Tests not run locally — running on CI" disclaimer.
   Confirm it's present when applicable.
+- **Idempotency via bare boolean (WARNING):** If a `Drupal.behaviors.attach`
+  implementation uses a module-level boolean (e.g. `var handlerBound = false`)
+  to guard against re-execution, flag as WARNING. The idiomatic Drupal 7 pattern
+  is `$(context).find('html').once('my-behavior-key')` or
+  `$(document).find('body').once(...)`. Bare booleans break when `attach` is
+  called for AJAX-loaded content (the guard fires only once globally, not once
+  per context). Exception: when `context` is always `document` by design and
+  the handler is document-level — document the reasoning.
 
 ### 5. Code standards (Compucorp shared-development-guide.md)
 
@@ -122,6 +140,56 @@ For Drupal 7 + CiviCRM code specifically:
 - No commented-out code, no `var_dump`/`print_r`/`xdebug_break` left behind
 - PSR-style indentation (PHPCS rules enforce most of this — Compucorp CI
   runs PHPCS, so style issues should be SUGGESTION not BLOCKER)
+
+### 5a. Upstream-first workflow (v1.12+)
+
+This section applies when reviewing a PR against a **CLIENT** repo (e.g., `compucorp/ies`,
+`compucorp/mm`, `compucorp/cst`). When `target_repo_type == "upstream"`, skip to section
+14 below instead.
+
+When the diff adds new behavior to a client repo (new JS file, new `Drupal.behaviors.*`,
+new event-binding hook, new `*_form_alter`, new preprocess function, etc.), verify the
+correct repo was targeted:
+
+1. Extract the primary identifiers the new behavior binds: selectors, event names,
+   jQuery globals, hook signatures, PHP function prefixes.
+
+2. `grep -rn` each against `<workspace>/repo-client/profiles/compuclient/...`
+   (the vendored parent-code tree).
+
+3. **Evaluate overlap precisely:**
+
+   - **BLOCKER** when ALL of these hold:
+     a. A file in `profiles/compuclient/...` binds the SAME EVENT on the SAME SELECTOR
+        as the new client-repo behavior, AND
+     b. The selector has NO client-specific qualifier (no `cw-` prefix scoped to this
+        site, no per-site container ID, no per-site data attribute), AND
+     c. The new behavior's intent overlaps with the upstream handler's intent (e.g.,
+        both are "close on outside click" — not "vendored binds `.dropdown` for menu
+        toggle; client binds for analytics").
+
+     In this case the agent misclassified at step 3.2 — this should have been an
+     upstream-rooted run with dual targets. State which upstream repo should have been
+     the primary PR target (e.g., `compucorp/compu_bs5` for `profiles/compuclient/themes/contrib/compu_bs5/`).
+
+   - **BLOCKER** when the diff edits files inside `profiles/compuclient/...` in the
+     client repo directly (e.g., `profiles/compuclient/modules/contrib/core-website/...`).
+     These edits are **ephemeral** — they are deleted wholesale when the client upgrades
+     its Compuclient profile. The fix must live in the upstream repo. State which upstream
+     repo (`compucorp/<name>`) should own this change.
+
+   - **WARNING** when overlap exists but ambiguity remains (e.g., the selector is a
+     generic Bootstrap class that vendored code binds for a different purpose). Suggest
+     the upstream alternative; accept the per-site PR if `## Technical Details`
+     documents the client-specific scope.
+
+   - **Pass** when no overlap (client-specific selectors, IDs, data-attributes with no
+     vendored equivalent, or fix is in `sites/all/themes/custom/<site>/` or
+     `sites/all/modules/{custom,features}/<site>/` with genuinely per-site scope).
+
+4. For PRs in upstream repos (`compu_bs5`, `ssp_core`, `core-website`, `compuclient`):
+   this section produces no finding — those PRs are correctly targeted by construction.
+   Proceed to section 14 to verify the client QA branch was also pushed.
 
 ### 6. PR-body compliance (when the parent passes the prospective body)
 
@@ -177,11 +245,20 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
    - **BLOCKER** if `create_test_user` is called (directly or via `lifecycle_test_user`) but cleanup is missing, conditional, or only closes the browser without cancelling the user. Orphan test users on staging compound across runs.
 
 4. **Artifact commit pattern** (when reproduction succeeded — `before.png` exists in workspace):
-   - The branch must include a separate commit that adds `.agent-artifacts/<TICKET>/before.png` (and `after.png` per invariant 5 when applicable) to the client repo, with commit message `<TICKET>: add visual reproduction evidence`.
-   - The commit must be **separate** from the fix commit — they have different audiences (fix = reviewer judgement; artifacts = reviewer evidence).
-   - Only screenshots ship to the client repo. `repro.py` and `repro_helpers.py` stay in the operator's workspace and Symphony's JSONL transcript — they are operator-internal tooling, not client-repo artifacts. **BLOCKER if a NEW artifact commit introduced in the current diff** includes `repro.py` or `repro_helpers.py` in `.agent-artifacts/<TICKET>/`. The prior pattern (v1.5–v1.8) committed them; the current pattern (v1.9+) does not. Apply this rule only to commits added since the previous reviewer round (or since the base branch, on round 1) — pre-existing commits on the branch from earlier policy versions are grandfathered and do not regress on re-review.
-   - PR `## Before` section must contain a markdown image referencing the artifact at the agent-branch raw URL (`https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png`).
-   - **BLOCKER** if `before.png` exists in workspace but the artifact commit is missing; OR if the commit mixes artifacts with fix code; OR if PR `## Before` doesn't reference the committed image; OR if PR `## Before` contains a broken link to a non-existent `.agent-artifacts/<TICKET>/repro.py`.
+
+   **First: check whether `.agent-artifacts/` is in the repo's `.gitignore`.** This determines the entire policy branch:
+
+   - **If `.agent-artifacts/` IS in `.gitignore`** (v1.12+ policy — workspace-only screenshots):
+     - **PASS** — no artifact commit is expected or required. Screenshots are workspace-only by design.
+     - **WARNING** if `.agent-artifacts/` files ARE committed to the PR branch despite the gitignore entry. The agent violated its own policy and the files will be silently ignored after merge but pollute the PR diff.
+     - PR `## Before`/`## After` sections should use the manual-verification block (dev-site URL + repro steps) rather than raw GitHub image links. **WARNING** if PR `## Before` still uses a raw GitHub image link pointing to a file that won't exist after merge (broken link risk post-merge).
+
+   - **If `.agent-artifacts/` is NOT in `.gitignore`** (v1.5–v1.11 policy — screenshots committed):
+     - The branch must include a separate commit that adds `.agent-artifacts/<TICKET>/before.png` (and `after.png` per invariant 5 when applicable) to the client repo, with commit message `<TICKET>: add visual reproduction evidence`.
+     - The commit must be **separate** from the fix commit — they have different audiences (fix = reviewer judgement; artifacts = reviewer evidence).
+     - Only screenshots ship to the client repo. `repro.py` and `repro_helpers.py` stay in the operator's workspace and Symphony's JSONL transcript — they are operator-internal tooling, not client-repo artifacts. **BLOCKER if a NEW artifact commit introduced in the current diff** includes `repro.py` or `repro_helpers.py` in `.agent-artifacts/<TICKET>/`. The prior pattern (v1.5–v1.8) committed them; the current pattern (v1.9+) does not. Apply this rule only to commits added since the previous reviewer round (or since the base branch, on round 1) — pre-existing commits on the branch from earlier policy versions are grandfathered and do not regress on re-review.
+     - PR `## Before` section must contain a markdown image referencing the artifact at the agent-branch raw URL (`https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/before.png`).
+     - **BLOCKER** if `before.png` exists in workspace but the artifact commit is missing; OR if the commit mixes artifacts with fix code; OR if PR `## Before` doesn't reference the committed image; OR if PR `## Before` contains a broken link to a non-existent `.agent-artifacts/<TICKET>/repro.py`.
 
 5. **After-state capture for CSS-only diffs** (`visual-repro.md` §8). Determine whether the diff is CSS-only by running, from inside `<workspace>/repo` (keep this command in sync with the gate in `visual-repro.md` §8):
    ```bash
@@ -244,6 +321,45 @@ Note: compiled-CSS paths covered are `dist/`, `build/`, `css/`, and `public/css/
 - **Acceptable rationales for source-only PR** (downgrade to WARNING): the repo's CI provably rebuilds on PR open (verifiable via `.github/workflows/*.yml` containing `npm run build` or equivalent); the diff intentionally introduces an SCSS rule that's already present in the compiled file via a different selector path (rare); the diff modifies SCSS comments or formatting that doesn't change compiled output (verifiable via local rebuild producing no diff); the theme's compiled output lives at a non-standard path not caught by the regex above (document the actual location).
 - **Unacceptable rationales (stay BLOCKER)**: "CI will rebuild" (verify the workflow file before accepting); "local build produced minified output incompatible with committed format" — this is the established hand-append pattern (see IES-596, IESBUILD-260 PR #228 for prior art); document the hand-append in PR `## Comments` rather than claiming exemption. The agent must commit a corresponding `dist/css/style.css` change in some form; the only question is whether it's npm-output or hand-appended.
 - **Critique the rationale per invariant 5's skip-rationale rules** — same anti-rubber-stamp posture applies.
+
+## 14. Dual-target completeness (upstream PRs only, v1.12+)
+
+This section applies ONLY when `target_repo_type == "upstream"` (the PR is against a
+Compucorp shared upstream repo: `compu_bs5`, `ssp_core`, `core-website`, `compuclient`,
+or any other `compucorp/<name>` shared module).
+
+For client-originated tickets (e.g., `IESBUILD-*`, `MMMM-*`, `COMCL-*`), verify that
+the agent also pushed a corresponding client QA branch for QA-team testing in client
+context.
+
+Detection — check ONE of these signals (in order of reliability):
+1. `<workspace>/repo-client/.git/refs/heads/qa-<TICKET>` exists (branch was pushed and
+   the ref is in the local clone), OR
+2. `<workspace>/dry-run-summary.md` or `<workspace>/plan.md` mentions the QA branch
+   URL (`https://github.com/compucorp/<client>/tree/qa-<TICKET>`), OR
+3. The parent agent passed `propagation_status` (any non-null value implies the
+   propagation step ran).
+
+**Verdict by case:**
+
+- **Pass** — QA branch push detected AND `propagation_status` is `byte-identical`.
+  The fix is reviewed upstream AND the QA team has a working client-context branch.
+
+- **WARNING** — QA branch push detected AND `propagation_status` is `context-resolved`.
+  The propagation required 3-way merge context resolution, so the vendored copy differs
+  slightly from the upstream patch. The QA team can test it, but an operator should
+  manually diff the vendored vs upstream patch to confirm no logic drift before
+  approving the upstream PR merge.
+
+- **WARNING** — No QA branch push detected AND `AGENT_DONE != "success-upstream-only"`.
+  The upstream PR is open but QA team has nothing to test in client context. This may
+  indicate the propagation step was skipped inadvertently. The operator should manually
+  create `qa-<TICKET>` from the client's current deployed tag.
+
+- **Pass** — `AGENT_DONE == "success-upstream-only"` (or `propagation_status == "skipped"`).
+  The Jira comment should explain why the client QA branch was omitted (3-way merge
+  conflict or explicit skip). Operator action is documented. No finding needed from
+  the reviewer.
 
 ## Output format
 
