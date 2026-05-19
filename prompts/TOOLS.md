@@ -183,9 +183,8 @@ The agent may trigger exactly these two jobs, in this order, and no others:
 
 **Phase A — Create Dev Site** (broken tag + DB):
 ```
-/job/Test_Jobs/job/Create%20Dev%20Site%20-%20Client%20Specific%20-%20Pipeline%20Test
+/job/Deployments/job/Dev%20Sites%20-%20Compucontainer/job/Create%20Dev%20Site%20-%20Client%20Specific
 ```
-_(temporary — Groovy pipeline test job; flip to `Deployments/Dev Sites - Compucontainer/Create Dev Site - Client Specific` when promoted to prod)_
 Always go through `repro_helpers.trigger_dev_site(...)` + `poll_until_deployed(...)` — never raw curl. Job parameters: `git_repo`, `git_tag` (the broken tag from `BASE_COMMIT`), `anonymised_database_url` (bare staging hostname OR anondbs URL), `lifespan` (1–31 internal / 1–90 public; default 14/30), `public_site`, `client_name` (required iff `public_site=true`), `MAUTIC_ENABLED`, `REDIS_ENABLED`.
 
 **Hostname extraction:** the resulting dev-site hostname is NOT predictable from inputs — it's auto-generated as `<adverb><adjective><animal>.cc-test.site` (internal) or `…public.cc-test.site` (public). The downstream `Pipeline-Mysql8` job emits one line in the console log of the parent build: `Pipeline-Mysql8 #N-<host> completed. Result was SUCCESS`. `poll_until_deployed` walks the queue → build → console and returns the host.

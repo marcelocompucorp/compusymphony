@@ -515,14 +515,9 @@ def lifecycle_test_user(admin_page: "Page", username: str, password: str,
 # audit (analyze-run.py) greps for this exact substring. If you change it,
 # update the audit detector and WORKFLOW.md in the same commit.
 #
-# TEMPORARY: pointing at the Groovy-pipeline test job until the migration is
-# promoted to the production job. To promote, flip both this constant and
-# JENKINS_DEVSITE_JOB_PATH_SUBSTR in analyze-run.py back to:
-#   "/job/Deployments/job/Dev%20Sites%20-%20Compucontainer"
-#   "/job/Create%20Dev%20Site%20-%20Client%20Specific"
 _DEVSITE_JOB_PATH = (
-    "/job/Test_Jobs"
-    "/job/Create%20Dev%20Site%20-%20Client%20Specific%20-%20Pipeline%20Test"
+    "/job/Deployments/job/Dev%20Sites%20-%20Compucontainer"
+    "/job/Create%20Dev%20Site%20-%20Client%20Specific"
 )
 
 # Hostname extraction: the downstream Pipeline-Mysql8 job emits a line like

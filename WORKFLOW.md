@@ -178,7 +178,7 @@ These override defaults; treat them as hard rules.
 
 5. **No production side effects outside the PR — narrow Jenkins carve-out.** Do NOT send email, do NOT create tickets in other Jira projects, do NOT post to external services. The only writes you make are: git commits, `gh pr create`, a single comment back on this Jira ticket with the PR link, AND **at most two** Jenkins build triggers per run — one for each of these exact job paths (in order):
 
-       `/job/Test_Jobs/job/Create%20Dev%20Site%20-%20Client%20Specific%20-%20Pipeline%20Test`  _(temporary — Groovy pipeline test job; flip to Deployments/… when promoted to prod)_
+       `/job/Deployments/job/Dev%20Sites%20-%20Compucontainer/job/Create%20Dev%20Site%20-%20Client%20Specific`
        `/job/Deployments/job/Dev%20Sites%20-%20Compucontainer/job/_Release%20Dev%20Site`
 
    Both triggers fire from step 12b-bis (post-reviewer-approval, pre-`gh pr create`), using `trigger_dev_site` (Phase A) and `trigger_release_devsite` (Phase B) helpers in `prompts/repro_helpers.py`, and are bounded to `SITE_DEPLOYABLE_REPOS` (defined below). Valid Jenkins POST counts per run: **0** (skipped), **1** (Phase A completed, Phase B skipped), **2** (full success). Counts `> 2` are a workflow violation. **No other Jenkins write paths are permitted**: not other jobs, not DELETE/PUT/PATCH on these jobs, not parameter edits, not job/folder mutations. The audit (`analyze-run.py:detect_jenkins_writes`) greps for the literal job-path substrings above — keep them in sync. Anything else Jenkins-related → comment on Jira asking a human.
