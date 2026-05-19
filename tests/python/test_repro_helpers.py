@@ -275,9 +275,78 @@ class TestCompucorpDrupalLoginAutodetect:
         # ... see helper docstring; test asserts the NotImplementedError path
         pytest.skip("Cognito-bypass path requires HEAD request mocking; covered when first Cognito site is added")
 
+    def test_standard_one_step_path(self):
+        """Drupal 7's stock login form: #edit-name + #edit-pass + #edit-submit
+        on the same page. Required for fresh Jenkins-spun dev sites that
+        don't ship the SSP theme."""
+        events = []
 
-    def test_standard_one_step_path_raises_not_implemented(self):
-        pytest.skip("Standard one-step path: deferred until first non-SSP non-Cognito site appears")
+        class _Field:
+            def __init__(self, name): self._name = name
+            def count(self): return 1
+            def is_visible(self): return True
+            @property
+            def first(self): return self
+            def fill(self, value):
+                events.append((f"fill[{self._name}]", value))
+
+        class _SubmitButton:
+            def count(self): return 1
+            @property
+            def first(self): return self
+            def click(self, **kwargs):
+                events.append(("click[submit]", None))
+
+        class FakePage:
+            def __init__(self):
+                self._url = "https://x.cc-test.site/user/login"
+            def goto(self, url, **kwargs):
+                events.append(("goto", url))
+                self._url = url
+            def locator(self, selector):
+                events.append(("page.locator", selector))
+                # SSP form does NOT exist → fall through to one-step
+                if "form#ssp-core-user-login-or-register-form" in selector:
+                    return _NotPresentLocator()
+                if "input#edit-name" in selector or "input[name='name']" in selector:
+                    return _Field("name")
+                if "input#edit-pass" in selector or "input[name='pass']" in selector:
+                    return _Field("pass")
+                if "input#edit-submit" in selector or "input[type='submit']" in selector or "input[name='op']" in selector:
+                    return _SubmitButton()
+                if "logout" in selector:
+                    return _FakeCounted(1)
+                return _FakeLocator(events)
+            def get_by_role(self, role, name=None):
+                return _FakeRoleClickRaises()
+            def wait_for_load_state(self, *a, **k):
+                events.append(("wait_for_load_state", a[0] if a else "?"))
+            def wait_for_selector(self, sel, **k):
+                events.append(("wait_for_selector", sel))
+            def expect_navigation(self, **kwargs):
+                return _FakeNavCtx()
+            @property
+            def url(self):
+                return self._url
+
+        rh.compucorp_drupal_login_autodetect(
+            FakePage(), "compucorp_admin", "compucorp_admin",
+            site="https://x.cc-test.site", try_cognito_bypass=False,
+        )
+
+        # Should have filled both fields and clicked submit
+        fills = [e for e in events if e[0].startswith("fill[")]
+        assert any("compucorp_admin" in str(f) for f in fills), \
+            f"expected username fill; got {fills!r}"
+        clicks = [e for e in events if e[0].startswith("click[")]
+        assert len(clicks) == 1, f"expected one submit click; got {clicks!r}"
+
+
+class _NotPresentLocator:
+    def count(self): return 0
+    def is_visible(self): return False
+    @property
+    def first(self): return self
 
 
 class _FakeInput:

@@ -176,7 +176,20 @@ These override defaults; treat them as hard rules.
 
    **Do NOT** add sections that aren't in the template (no `## Summary`, `## Evidence`, `## Root cause`, `## Fix`, `## Verification`, or anything else). **Do NOT** add an "About this PR" or "🤖 About this PR" section — that violates the "no AI attribution" rule from `shared-development-guide.md` §5.
 
-5. **No production side effects outside the PR.** Do NOT mandate Jenkins builds, do NOT send email, do NOT create tickets in other Jira projects, do NOT post to external services. The only writes you make are: git commits, `gh pr create`, a single comment back on this Jira ticket with the PR link. Anything else → comment on Jira asking a human.
+5. **No production side effects outside the PR — narrow Jenkins carve-out.** Do NOT send email, do NOT create tickets in other Jira projects, do NOT post to external services. The only writes you make are: git commits, `gh pr create`, a single comment back on this Jira ticket with the PR link, AND **at most two** Jenkins build triggers per run — one for each of these exact job paths (in order):
+
+       `/job/Test_Jobs/job/Create%20Dev%20Site%20-%20Client%20Specific%20-%20Pipeline%20Test`  _(temporary — Groovy pipeline test job; flip to Deployments/… when promoted to prod)_
+       `/job/Deployments/job/Dev%20Sites%20-%20Compucontainer/job/_Release%20Dev%20Site`
+
+   Both triggers fire from step 12b-bis (post-reviewer-approval, pre-`gh pr create`), using `trigger_dev_site` (Phase A) and `trigger_release_devsite` (Phase B) helpers in `prompts/repro_helpers.py`, and are bounded to `SITE_DEPLOYABLE_REPOS` (defined below). Valid Jenkins POST counts per run: **0** (skipped), **1** (Phase A completed, Phase B skipped), **2** (full success). Counts `> 2` are a workflow violation. **No other Jenkins write paths are permitted**: not other jobs, not DELETE/PUT/PATCH on these jobs, not parameter edits, not job/folder mutations. The audit (`analyze-run.py:detect_jenkins_writes`) greps for the literal job-path substrings above — keep them in sync. Anything else Jenkins-related → comment on Jira asking a human.
+
+   **`SITE_DEPLOYABLE_REPOS`** — only these repos can be deployed by the carved-out job (the rest of the push allowlist in invariant #1 stays unchanged; the dev-site step skips with a `## Comments` note for non-site repos):
+   ```
+   ase, ies, eseb, ciwem, dta, drw-website, tcos, irs,
+   hse_dais_documents, hse_dais_main_app, hse_dais_merge,
+   civiplus-distribution, core-website, mm, cst
+   ```
+   `compuclient` is intentionally excluded: it's a Drupal install profile consumed by the sites above via `compuclient.make.yml`, not a standalone-deployable site. A Phase 1.5 design pass would add it if a real Jira ticket needs the dev-site step against it.
 
 6. **Don't fake verification.** If you didn't actually run the tests, say so in the `## Comments` section (e.g. "Tests not run locally; no PHPUnit setup in this repo — relying on CI"). Do NOT paste test output you didn't capture.
 
@@ -224,10 +237,11 @@ For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the shor
 
 **Activation condition:** This block applies ONLY when `{{ issue.labels }}` contains `agent:dry-run`. If the current ticket does NOT have that label, skip this entire section and follow the normal Routine.
 
-When active, this is a **dry-run** for end-to-end validation. Execute the Routine normally **through step 12a (reviewer subagent)**, then **STOP**. Specifically:
+When active, this is a **dry-run** for end-to-end validation. Execute the Routine normally **through step 12b-bis (dev-site deploy + after.png)**, then **STOP**. Specifically:
 
 - Do steps 1–11 fully (investigate, plan, implement, commit locally).
 - Do step 12a (dispatch the reviewer subagent and save `review-result-r<N>.json`) — we want to validate the reviewer path works.
+- Do step 12b-bis **fully (both Phase A and Phase B)** if the repo is in `SITE_DEPLOYABLE_REPOS` — we want to validate the entire two-phase dev-site path. **Pass `lifespan=1` to Phase A** (`trigger_dev_site`) so dry-run sites evaporate fast and don't accumulate. Phase B (`trigger_release_devsite`) has no lifespan parameter and always runs to completion. This means dry-run produces **two** Jenkins triggers (count=2 in the audit) and both `before.png` and `after.png` should land in `.agent-artifacts/`. The Jenkins triggers are real production side effects, but the user opted into autonomous dev-site provisioning; dry-run E2E validation has no value if we skip the new step.
 - **Do NOT run `gh pr create`** (skip 12c entirely). No PR is to be opened.
 - **Suppress ALL agent-initiated Jira writes in dry-run mode** — no comments, label mutations, status transitions, worklogs, or issue links of any kind, with ONE exception (the success-path label removal below). This is a categorical rule, not an enumeration: any new agent-initiated Jira write added to the Routine in future MUST also be suppressed under dry-run. The currently-known write paths covered: step 13 PR-link comment, step 1a triage-conflict comment, Blockers-section block comment, invariant 1's allowlist-miss comment, step 3b's multi-site / zero-site / ambiguous-images.php / failed-rev-parse comments, any TOOLS.md gated-request comment (e.g. Loki production approval, AWS role-ARN request), and any future comment-on-exit path. The operator triggered the dry-run, has the workspace + `<workspace>/dry-run-summary.md` + `<workspace>/AGENT_DONE` as the complete audit trail, and can inspect everything directly. Jira viewers (other engineers, clients) MUST NOT see test-run artifacts.
 - **Label handling depends on outcome:**
@@ -348,9 +362,9 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 9. **Verify with `superpowers:verification-before-completion`.** Run the tests. If the test suite requires a full Docker setup (CiviCRM `./scripts/run.sh setup`), do NOT run it locally — record `Tests not run locally — running on CI` and rely on CI green as the gate. For unit/script tests that run fast, run them and paste real output.
 
-10. **Visual verification (UI-changing PRs).** Apply the three-condition gate from `prompts/visual-repro.md` § 1: (a) diff touches `*.tpl/*.scss/*.css/themes/*.theme/dist`, AND (b) a specific staging URL is resolvable from the ticket (description, comments, or via step 3b Mongo lookup), AND (c) the URL passes `assert_staging_host`. If any condition fails, document the gate decision in PR `## Comments` (one line: "Visual repro skipped: <reason>") and proceed to step 11 with `## Manual verification required` in the PR body.
+10. **Visual verification (any ticket with an observable symptom).** Apply the two-condition gate from `prompts/visual-repro.md` § 1: (a) a specific staging URL is resolvable from the ticket (description, comments, or via step 3b Mongo lookup), AND (b) the URL passes `assert_staging_host`. The gate is no longer restricted to UI-changing diffs — backend tickets (PHP/hook/API/queue/email fixes) reproduce through the UI surface where their symptom appears (Civi admin view, `/admin/reports/dblog`, Mautic preview, SearchKit, etc.). If either condition fails, document the gate decision in PR `## Comments` (one line: "Visual repro skipped: <reason>") and proceed to step 11 with `## Manual verification required` in the PR body.
 
-    When all three conditions hold:
+    When both conditions hold:
 
     10a. Read `prompts/visual-repro.md`.
     10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo/`).
@@ -404,7 +418,179 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    - `reject` with BLOCKERs/QUESTIONs and N < 3 → fix the BLOCKERs (revise plan + code), re-dispatch (back to 12a)
    - `reject` and N == 3 → STOP. Post Jira comment quoting `review-result-r3.json.findings` (BLOCKERs only) and the rounds attempted. Leave `agent:todo` label ON. Write `<workspace>/AGENT_DONE` with content: `blocked-review <ISO-8601-timestamp> {{ issue.identifier }}`. Exit without opening PR.
 
-   12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round. Never run `gh pr create` directly without that round having been the final action; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). Target the repo's default branch (`master` for `ase`, the current `7.x-N.x` major-version branch for `compuclient`). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
+   12b-bis. **Two-phase dev-site verification** (mandatory if the target repo is in `SITE_DEPLOYABLE_REPOS` per invariant #5; skip with a one-line `## Comments` note otherwise — e.g. extension, theme, or infra repo). Runs ONLY after 12b returned `verdict: approve`; the reviewer evaluates code, the dev site evaluates the deployed result.
+
+   **Skip guard — doc-only diffs:** Run `git diff --stat <default-branch>..HEAD` and if every changed path matches `*.md`, `*.txt`, or is comment-only, skip 12b-bis with `## Comments` note: "Dev-site step skipped: doc-only diff." Saves Jenkins on trivial PRs.
+
+   Symphony's stall detector fires after ~5 min of no Claude API activity. Jenkins builds can run for up to 30 min. **Never run a poll loop in a single blocking Bash call.** The pattern below uses 90-second timeout chunks — each iteration is a fresh Bash call that resets the stall timer. Cap all poll loops at 20 re-runs (~30 min); treat cap as a failure per the failure table below.
+
+   ---
+
+   ### Phase A — Create dev site at broken tag (before.png)
+
+   **Goal:** deploy the code that was live when the bug was filed, loaded with the best available database, so `assert_bug_reproduced` fires on the dev site and we can capture `before.png` on identical infrastructure to Phase B.
+
+   **A1. Resolve the broken tag.**
+   Use `BASE_COMMIT` already in scope from step 3b (resolved from Mongo `sites.images.php` when the staging site was first inspected). Do **not** re-query Mongo — staging may have been re-deployed since.
+
+   **A2. Pick the database source** based on where the bug was reported:
+   - **Bug reported on a staging site** (hostname ends `.cc-staging.site`): pass the bare staging hostname as `anondb_url` (e.g. `ies2.cc-staging.site`). The Groovy pipeline generates S3 presigned URLs for that hostname's backup bucket automatically.
+   - **Bug reported on production or any other site**: call `resolve_anondb_url("<ticket-hostname-from-3b>")` from `repro_helpers` — returns the client-matched anondbs URL (e.g. `https://anondbs.cc-infra.tools/dir.php?name=…`). If it returns `None` → skip both phases entirely, note in `## Comments`: "Dev-site step skipped: anondb lookup returned None for `<hostname>`." Continue to 12c.
+
+   **A3. Push the broken tag and trigger Phase A (fast, one-shot):**
+   ```bash
+   # In the workspace repo directory — create a Docker-safe tag at BASE_COMMIT
+   git tag agent-{{ issue.identifier }}-before <BASE_COMMIT>
+   git push origin agent-{{ issue.identifier }}-before
+   ```
+   ```python
+   from repro_helpers import trigger_dev_site, devsite_git_tag
+   import pathlib
+   before_tag = devsite_git_tag(f"agent/{{ issue.identifier }}-before")
+   queue_url = trigger_dev_site(
+       git_repo  = f"git@github.com:compucorp/{repo}.git",
+       git_tag   = before_tag,
+       anondb_url= anondb,          # bare hostname or anondbs URL from A2
+       public    = False,
+       lifespan  = (1 if dry_run else None),
+   )
+   pathlib.Path("<workspace>/.devsite-queue").write_text(queue_url)
+   print(f"triggered Phase A: {queue_url}")
+   ```
+   This returns in < 5 s.
+
+   **A4. Poll loop (each iteration is a fresh Bash call):**
+
+   Before each iteration: if `<workspace>/.devsite-host` already exists, skip to A5 (restart-safe).
+   ```python
+   from repro_helpers import poll_until_deployed, wait_until_site_up
+   import pathlib, sys
+
+   queue_url = pathlib.Path("<workspace>/.devsite-queue").read_text().strip()
+
+   # Stall-detector restart safety: Jenkins purges the queue item ~5 min
+   # after the build starts. On re-invocations, pass the cached build_url
+   # to skip Phase 1 queue polling (avoids a 404 RuntimeError).
+   build_url_file = pathlib.Path("<workspace>/.devsite-build-url")
+   build_url = build_url_file.read_text().strip() if build_url_file.exists() else None
+
+   host = poll_until_deployed(queue_url, build_url=build_url,
+                              expect_public=False,
+                              timeout_s=90, raise_on_timeout=False)
+   if host is None:
+       # Cache the build_url for future iterations (if Phase 1 resolved it
+       # this iteration, the build_url is in .devsite-build-url if we wrote
+       # it — but poll_until_deployed doesn't expose it directly).
+       # Workaround: query the queue item once to get executable.url.
+       import requests, os
+       try:
+           r = requests.get(f"{queue_url}api/json",
+                            auth=(os.environ["JENKINS_USER"], os.environ["JENKINS_TOKEN"]),
+                            timeout=15)
+           if r.status_code == 200:
+               exe = r.json().get("executable") or {}
+               if exe.get("url"):
+                   build_url_file.write_text(exe["url"])
+       except Exception:
+           pass
+       print("Phase A still building — re-run to continue polling")
+       sys.exit(42)   # sentinel: agent re-runs after 60 s
+   wait_until_site_up(host, timeout_s=900)
+   pathlib.Path("<workspace>/.devsite-host").write_text(host)
+   print(f"PHASE_A_HOST={host}")
+   ```
+   Exit code `42` → sleep 60 s, re-run. `0` → proceed to A5. Any other non-zero or cap exceeded → **Phase A failure** (see failure table; skip both phases, continue to 12c).
+
+   **A5. Capture before.png:**
+
+   Run `visual-repro.md §9a`: reproduce the bug → `assert_bug_reproduced` → capture `before.png`. Save to `<workspace>/before.png` and copy to `repo/.agent-artifacts/{{ issue.identifier }}/before.png`. Commit on the agent branch (second commit after the fix commit — intentional append post-approval).
+
+   If `assert_bug_reproduced` does **not** fire (file-system-only or SSP-specific bug that has no observable surface on the dev site): log a warning, fall back to the staging `before.png` already captured in step 3b, continue to Phase B regardless.
+
+   **A6. Clean up the before tag:**
+   ```bash
+   git push origin --delete agent-{{ issue.identifier }}-before
+   ```
+
+   ---
+
+   ### Phase B — Release fix branch to same dev site (after.png)
+
+   **Goal:** deploy the agent's fix branch to the same dev site (same data, no DB reimport) and assert the bug is gone.
+
+   **B1. Push the fix tag and trigger Phase B (fast, one-shot):**
+   ```bash
+   git tag agent-{{ issue.identifier }}-fix HEAD
+   git push origin agent-{{ issue.identifier }}-fix
+   ```
+   ```python
+   from repro_helpers import trigger_release_devsite, devsite_git_tag
+   import pathlib
+   fix_tag   = devsite_git_tag(f"agent/{{ issue.identifier }}-fix")
+   devsite_host = pathlib.Path("<workspace>/.devsite-host").read_text().strip()
+   queue_url = trigger_release_devsite(
+       site_url = devsite_host,
+       git_tag  = fix_tag,
+   )
+   pathlib.Path("<workspace>/.release-queue").write_text(queue_url)
+   print(f"triggered Phase B: {queue_url}")
+   ```
+
+   **B2. Poll loop (each iteration is a fresh Bash call):**
+
+   Before each iteration: if `<workspace>/.release-done` already exists, skip to B3 (restart-safe).
+   ```python
+   from repro_helpers import poll_until_released, wait_until_site_up
+   import pathlib, sys
+   queue_url    = pathlib.Path("<workspace>/.release-queue").read_text().strip()
+   devsite_host = pathlib.Path("<workspace>/.devsite-host").read_text().strip()
+   result = poll_until_released(queue_url, site_url=devsite_host,
+                                timeout_s=90, raise_on_timeout=False)
+   if result is None:
+       print("Phase B still running — re-run to continue polling")
+       sys.exit(42)
+   wait_until_site_up(devsite_host, timeout_s=300)
+   pathlib.Path("<workspace>/.release-done").write_text("ok")
+   print(f"PHASE_B_DONE host={devsite_host}")
+   ```
+   Exit code `42` → sleep 60 s, re-run. `0` → proceed to B3. Any other non-zero or cap exceeded → **Phase B failure** (see failure table; skip `after.png`, continue to 12c).
+
+   **B3. Capture after.png:**
+
+   Run `visual-repro.md §9b`: `assert_bug_fixed` → capture `after.png`. Save to `<workspace>/after.png` and copy to `repo/.agent-artifacts/{{ issue.identifier }}/after.png`. Commit on the agent branch.
+
+   If `assert_bug_fixed` **fails** (assertion didn't fire): **BLOCK** the PR. Post a Jira blocker comment quoting (a) the reviewer's approval, (b) both Jenkins build numbers + dev-site URL, (c) the assertion failure, and (d) likely cause: "DB or data state may not reproduce the bug on the dev site." Leave `agent:todo` ON. Write `<workspace>/AGENT_DONE` with prefix `blocked-verify`. Skip 12c entirely.
+
+   **B4. Clean up the fix tag:**
+   ```bash
+   git push origin --delete agent-{{ issue.identifier }}-fix
+   ```
+
+   ---
+
+   ### Failure modes
+
+   | Failure | Behaviour |
+   |---|---|
+   | Repo not in `SITE_DEPLOYABLE_REPOS` | Skip both phases. One-line `## Comments` note. Continue to 12c. |
+   | Doc-only diff | Skip both phases. One-line `## Comments` note. Continue to 12c. |
+   | anondb lookup returns `None` | Skip both phases. Note in `## Comments`. Continue to 12c. |
+   | Phase A FAILURE / timeout / cap | Skip both phases. Note build # in `## Comments`. Use staging `before.png` from step 3b. Continue to 12c. |
+   | `assert_bug_reproduced` doesn't fire | Log warning. Use staging `before.png`. Continue to Phase B. |
+   | Phase B FAILURE / timeout / cap | Skip `after.png`. Note build # in `## Comments`. Continue to 12c. |
+   | `assert_bug_fixed` fails on dev site | **Block PR.** `AGENT_DONE` with `blocked-verify` prefix. Jira blocker comment. |
+
+   **Orphan-tag note:** A6 and B4 push-delete the Jenkins tags after each phase. If the agent crashes or is interrupted between the tag push and the delete, `agent-<TICKET>-before` and/or `agent-<TICKET>-fix` tags will leak on the remote. They are harmless (lightweight tags; no CI triggers on them) but accumulate over time. If you notice orphan `agent-*` tags when inspecting a repo, delete them manually with `git push origin --delete <tag-name>`.
+
+   ### PR-body additions (12c)
+
+   - `## Before` — references dev-site `before.png` if captured; otherwise staging `before.png` from step 3b.
+   - `## After` — `after.png` if captured, plus: `Live verification at https://<host> (auto-expires <date>).`
+   - `## Comments` — one line per job: "Phase A: Jenkins build #N, tag=`<before_tag>`, anondb=`<url>`." and "Phase B: Jenkins build #N, tag=`<fix_tag>`."
+
+   When 12b-bis runs successfully, `visual-repro.md` §8's inject-based `after.png` path is **superseded** — do not run it. The §8 path only fires when 12b-bis was skipped AND the diff is CSS-only.
+
+   12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round AND (12b-bis ran to completion OR 12b-bis was skipped per its own gates — but NEVER if 12b-bis blocked). Never run `gh pr create` directly without those rounds having been the final actions; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). Target the repo's default branch (`master` for `ase`, the current `7.x-N.x` major-version branch for `compuclient`). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
 
 13. **Post the PR link as a Jira comment** via the Atlassian MCP. One concise comment, e.g.: `PR: https://github.com/... — please review.`
 
@@ -436,6 +622,7 @@ When blocked, the Jira comment should state: what's missing, why it blocks the w
 | `success` | Routine ran to completion, PR opened, Jira commented, label removed. | Step 15 |
 | `dry-run` | DRY-RUN OVERRIDE ran through step 12a, reviewer approved, no external side effects. | DRY-RUN OVERRIDE block |
 | `blocked-review` | Reviewer subagent rejected at N=3 (invariant #9 loop limit). | Step 12b |
+| `blocked-verify` | Reviewer approved, dev-site deploy succeeded, but `assert_bug_fixed` did not fire — typically the fresh anondb lacks the data state that triggers the bug. Operator decides whether to seed data + retry, push the PR manually after sanity-checking the dev site, or widen anondb selection. | Step 12b-bis |
 | `blocked` | Generic blocker (Blockers section: repo not on allowlist, missing credentials, infra-touching scope, irreproducible bug). | Blockers section |
 
 Any other prefix, missing fields, malformed timestamp, or mismatched `issue.identifier` is a workflow bug and must be flagged by `analyze-run.py`. Operators rely on these strings to triage runs at a glance; do not invent new prefixes without updating this schema first.

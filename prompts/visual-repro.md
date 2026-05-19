@@ -1,20 +1,21 @@
 # Visual Bug Reproduction — Operational Procedure
 
-Read this when WORKFLOW.md step 10 invokes the visual-repro procedure. The goal is to reproduce a UI bug in a real browser against the affected staging site **before** writing the fix, to confirm root-cause understanding and produce a `before.png` for the PR.
+Read this when WORKFLOW.md step 10 invokes the visual-repro procedure. The goal is to reproduce a bug (UI or backend-with-observable-symptom) in a real browser against the affected staging site **before** writing the fix, to confirm root-cause understanding and produce a `before.png` for the PR.
 
-## 1. When to apply (three-condition gate — ALL required)
+## 1. When to apply (two-condition gate — both required)
 
-The procedure runs only when:
+The procedure runs when:
 
-- **(a) UI file types touched:** diff includes at least one of `*.tpl`, `*.scss`, `*.css`, files under `themes/`, files under `*.theme/*`, or compiled CSS in `dist/`.
-- **(b) Staging host identifiable:** a specific staging URL can be resolved from the ticket (description, comments, or step 3b's Mongo lookup). Tickets in extension/profile repos (`compucorp/ase`, `compucorp/compuclient`, `compucorp/invoicehelper`) often touch UI but don't bind to a single site — for those, the gate fails (b) and falls through to manual verification with a `## Comments` note explaining which sites are affected.
-- **(c) Staging host passes `assert_staging_host`** (within the allowlist).
+- **(a) Staging host identifiable:** a specific staging URL can be resolved from the ticket (description, comments, or step 3b's Mongo lookup). Tickets in extension/profile repos (`compucorp/ase`, `compucorp/compuclient`, `compucorp/invoicehelper`) often don't bind to a single site — for those, the gate fails (a) and falls through to manual verification with a `## Comments` note explaining which sites are affected.
+- **(b) Staging host passes `assert_staging_host`** (within the allowlist).
 
-If any condition fails: write `## Manual verification required` in the PR body and document the gate decision in `## Comments` ("Visual repro skipped: <reason>").
+If either condition fails: write `## Manual verification required` in the PR body and document the gate decision in `## Comments` ("Visual repro skipped: <reason>").
 
-Within (a)+(b)+(c), if the bug isn't reproducible via browser automation (race condition, real-user content, PII, etc.), document the decision in `## Manual verification required` and skip the rest.
+Within (a)+(b), the agent attempts to reproduce the bug regardless of which files the fix touches. The symptom is the trigger, not the diff. If the bug genuinely has no browser-observable symptom (rare — pure internal log line, race condition, etc.), document the decision in `## Manual verification required` and skip the rest.
 
-For **CSS-only diffs** (no `*.js`, `*.php`, `*.module`, `*.install`, `*.inc`, or `template.php` files in the diff), §8 additionally applies: an `after.png` is captured by runtime-injecting the equivalent CSS — no deploy required.
+**Scope note (changed):** earlier versions of this gate required the diff to touch UI files (`*.scss`/`*.tpl`/`*.css`/etc.). That has been dropped — bugs are filed because someone observed something wrong, regardless of where the fix lives. Most backend bugs surface through a UI page (the dblog, a Civi admin view, a Mautic preview), and the same Playwright harness can verify them. The CSS-file gate now lives on §8 only (it remains a real constraint on the *injection* technique).
+
+For **CSS-only diffs** (no `*.js`, `*.php`, `*.module`, `*.install`, `*.inc`, or `template.php` files in the diff), §8 additionally applies: an `after.png` is captured by runtime-injecting the equivalent CSS — no deploy required. The CSS-only check is local to §8; it does NOT gate this top-level §1.
 
 ## 2. Three patterns — copy the simplest that fits the bug
 
@@ -233,6 +234,8 @@ If the script:
 - `repro.py` is written at `<workspace>/repro.py` (workspace root, NOT inside `./repo/`).
 - `before.png` is written by the script at `<workspace>/before.png`.
 
+**`before.png` role when 12b-bis runs:** the staging before.png captured here is the **fallback** source for the PR's `## Before` section. When 12b-bis Phase A fires and `assert_bug_reproduced` passes on the dev site, the dev-site `before.png` supersedes this one (same data, same infra as the after-pass — stronger comparison). If Phase A fails or `assert_bug_reproduced` doesn't fire on the dev site, this staging screenshot is used instead. Always capture it regardless.
+
 **Post-success: commit screenshots into the client repo on the agent branch.** After `assert_bug_reproduced` fires and `before.png` is captured, copy the screenshots (only — not the script) into `<workspace>/repo/.agent-artifacts/<TICKET>/` and commit them as a SEPARATE commit (not mixed with the fix):
 
 ```bash
@@ -257,7 +260,9 @@ Reproduction captured against `<staging URL>` (use the `SITE` constant from `rep
 
 **Artifact lifecycle:** the branch raw URL works during PR review. After PR merge + branch deletion, the URL stops resolving but the artifacts permanently land in master via the merge (~1–2 MB per UI ticket; doubled when §8 captures `after.png`). Accepted trade-off for v1.6 — the GitHub user-attachments CDN that humans drag-drop into PR bodies requires `user_session` cookie auth and is not accessible to PATs or GitHub Apps (cli/cli#13256, community#29993), so an asymmetric "after.png in user-attachments" pattern would require manual upload per PR. Object storage (S3, Cloudflare R2) is the cleaner alternative for v2 if repo bloat becomes material.
 
-## 8. After-state capture for CSS-only fixes
+## 8. After-state capture for CSS-only fixes (legacy — superseded when §9 applies)
+
+**Use this section ONLY when §9 (agent-spun dev site) did not run** — i.e. the repo is not in `SITE_DEPLOYABLE_REPOS`, the Jenkins trigger was skipped per its own gates (doc-only diff, ambiguous anondb, missing token), or 12b-bis is otherwise unavailable. When §9 runs, the deployed-code `after.png` it produces supersedes this inject-based path — running both would emit two competing screenshots for the same diff.
 
 When the substantive diff is exclusively CSS/SCSS/template (no JS, PHP, or other behavior-bearing code), capture an `after.png` showing the fix in effect by runtime-injecting the equivalent CSS into a fresh staging page. Same staging URL, same DOM, same session — only the CSS in scope differs. No deploy needed; CSS is declarative and the browser repaints with the injected rule.
 
@@ -395,3 +400,134 @@ If either step still reproduces the before-state, the fix needs follow-up.
 ### Failure handling
 
 If `assert_bug_fixed` raises or `after.png` is missing after the run, do NOT commit a partial `after.png`. Document the gap in PR `## Comments` ("After-state capture attempted but failed: <reason>. Manual post-deploy verification required.") and use the manual-verification block above for `## After`.
+
+## 9. Dev-site verification — before.png (§9a) and after.png (§9b)
+
+WORKFLOW.md step 12b-bis spins up a dev site **twice**: once at the broken tag (Phase A → `before.png`) and once after releasing the fix branch (Phase B → `after.png`). Both screenshots come from the same dev site with the same data — a true apples-to-apples comparison. §9a covers Phase A; §9b covers Phase B.
+
+This section is called by:
+- `12b-bis` Phase A step A5 → §9a (before.png on dev site at broken tag)
+- `12b-bis` Phase B step B3 → §9b (after.png after release)
+
+### Scope — not bound by diff file types
+
+§9 applies to **any bug whose symptom is observable on the dev site**, regardless of which files the fix touched. The §8 gate ("diff is CSS-only") was about whether *injection* is safe; §9 is real deployment, no such constraint.
+
+The reasoning: if a bug was filed, it has an observable symptom — that's how the reporter noticed it. The agent's `reproduce` flow already walks to that observation point for `before.png`. §9a replays that same flow against the dev site (now at the broken tag + staging data) to confirm the bug is present; §9b asserts it's gone after the fix release.
+
+Below are **illustrative examples**, not authoritative recipes — paths and admin menus vary across CiviCRM distributions and Compucorp client themes. The agent must verify the actual path on the dev site (open the page, find the trigger) before scripting it. The patterns are starting points; treat them as such.
+
+| Bug type | `reproduce_after_state` (example) | `assert_bug_fixed` (example) |
+|---|---|---|
+| Theme/CSS rendering | Navigate to affected page | DOM property (colour, layout, visibility) |
+| Form behaviour / JS | Fill form, trigger interaction | Submit-button state, validation message, error absence |
+| Backend data adjustment (`hook_civicrm_pre` etc.) | Create/edit a record, view it | Record field shows expected value |
+| Payment webhook | Trigger payment flow OR `page.request.post(WEBHOOK_URL, ...)` | Resulting contribution status / API response |
+| CiviCRM API output reshape | Navigate to SearchKit/API4 explorer page | Expected field present in response |
+| Drush / cron / queue worker | Locate the matching admin page (e.g. CiviCRM scheduled-jobs admin) and trigger a manual run | Result page / `/admin/reports/dblog` entry shows expected outcome |
+| Permission rule | Log in as user X, navigate to page Y | HTTP 403 (or page renders, depending on the bug) |
+
+**Email-template / Mautic tickets**: not currently supported via §9 on agent-spun dev sites. `trigger_dev_site` defaults to `MAUTIC_ENABLED=false` because most tickets don't need Mautic and enabling it adds ~30s build time. If a future email-template ticket needs §9, pass `mautic=True` to `trigger_dev_site` (helper param exists) and verify via Mautic's preview UI. For Phase 1, route email-template tickets through the `## Manual verification required` fall-through.
+
+**60-second probe before scripting.** Before writing `reproduce_after_state`, the agent should spend ≤60s identifying a UI page where the bug's symptom is observable. If no such page exists (pure-internal effect — e.g. a log line that doesn't reach `/admin/reports/dblog`, an asynchronous queue effect not visible in any admin view, a race condition unsuitable for browser automation), **skip §9 with a `## Comments` note**: "Dev-site verification skipped: <bug-class> has no observable post-deploy surface; relying on unit tests + manual verification." Continue to 12c. This bounds the cost on tickets that turn out to be unverifiable through the dev-site path.
+
+For HTTP-only surfaces (webhooks with no UI page), use `page.request.post(url, json=..., data=...)` — same Playwright context, exercises the deployed code, asserts on response. Don't shell out to `requests` separately; staying in the Playwright session keeps the audit clean.
+
+### Inputs (provided by 12b-bis)
+
+- `DEVSITE_HOST` — the auto-generated hostname (e.g. `quietfoggypanda.cc-test.site`), returned by `poll_until_deployed`. Shared across both phases — Phase B reuses the same site. Agent-spun dev sites are **internal** (`public_site=False` per WORKFLOW.md step 12b-bis) — no Traefik Basic Auth wall, reachable directly.
+- `DEVSITE_URL` — `https://<DEVSITE_HOST>`. The hostname allowlist in `assert_staging_host` already accepts `*.cc-test.site` — no helper change needed.
+
+### Credentials on a fresh agent-spun dev site
+
+Different from §8's existing-staging-site path. Fresh sites have:
+
+- **No Traefik Basic Auth.** `public_site=False` means no gateway wall — skip the `basic_auth_context` call entirely; a plain `browser.new_context()` works.
+- **Drupal admin** = `compucorp_admin` / `compucorp_admin`. This is the anondb seed default that ships with every Jenkins-spun dev site. Do NOT consult sysPass for these — there's no per-site entry for fresh agent sites.
+
+This is intentionally different from how the agent treats existing client staging sites (which DO have Traefik Basic Auth and DO use sysPass per `prompts/TOOLS.md` §Compucorp dev sites). The before-pass (against the ticket's staging site) keeps using sysPass; only the after-pass against the new dev site uses the hardcoded pair.
+
+**Risk acknowledged (validate on first dry-run).** `prompts/TOOLS.md` line 242 says the historical `compucorp_admin/compucorp_admin` pair is "NOT reliable for current staging sites — always use sysPass." That note applies to **existing client staging sites** which are long-lived and may have had their admin password rotated. Fresh anondb-restored dev sites are expected to ship with the seed default unchanged — but this assumption has not been verified end-to-end in the agent path. If the first dry-run fails at the Drupal login step (`compucorp_drupal_login_autodetect` raises after detecting the form), the operator should inspect what creds the fresh site actually uses (sysPass entry created post-deploy? different default in the anondb being seeded? `compucorp/mysql-database-anonymizer` rewriting the users table?) and update this section.
+
+**Form-shape autodetect.** `compucorp_drupal_login_autodetect` now handles both:
+- SSP two-step (used by client staging sites with the SSP theme — e.g. `ies2.cc-staging.site`)
+- Standard Drupal 7 one-step (used by fresh dev sites that don't ship SSP)
+The helper logs which shape it detected; check the agent transcript if login behaves unexpectedly.
+
+### §9a — Phase A: before.png on dev site at broken tag
+
+Called by 12b-bis step A5. The dev site is running `BASE_COMMIT` (the broken tag) with the staging or anondbs database. Run the same reproduce flow as the staging before-pass, but against the dev site.
+
+```python
+from repro_helpers import (
+    assert_staging_host, compucorp_drupal_login_autodetect,
+    DEFAULT_VIEWPORT,
+)
+import pathlib
+
+DEVSITE_URL = "https://<DEVSITE_HOST>"     # from poll_until_deployed (Phase A)
+assert_staging_host(DEVSITE_URL)
+pathlib.Path("before.png").unlink(missing_ok=True)   # stale-output guard
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    # No basic_auth_context — internal dev site has no Traefik wall.
+    ctx = browser.new_context(viewport=DEFAULT_VIEWPORT)
+    page = ctx.new_page()
+    page.goto(f"{DEVSITE_URL}/<bug-page-path>")
+    # Hardcoded anondb-seed defaults — see §9 "Credentials" above.
+    compucorp_drupal_login_autodetect(page, "compucorp_admin", "compucorp_admin",
+                                       site=DEVSITE_URL)
+    # Same reproduce flow as the staging before-pass.
+    reproduce(page)
+    assert_bug_reproduced(page)                # must fire — confirms bug is present
+    page.screenshot(path="before.png", full_page=True)
+    browser.close()
+```
+
+If `assert_bug_reproduced` does **not** fire: log a warning, fall back to the staging `before.png` already captured in WORKFLOW.md step 10, and continue to Phase B regardless. The dev-site before.png is preferred but not required.
+
+### §9b — Phase B: after.png after release
+
+Called by 12b-bis step B3. The same dev site is now running the agent's fix branch (same data, no DB reimport). Re-run the reproduce flow and assert the bug is gone.
+
+```python
+from repro_helpers import (
+    assert_staging_host, compucorp_drupal_login_autodetect,
+    DEFAULT_VIEWPORT,
+)
+import pathlib
+
+DEVSITE_URL = "https://<DEVSITE_HOST>"     # same host as Phase A
+assert_staging_host(DEVSITE_URL)
+pathlib.Path("after.png").unlink(missing_ok=True)    # stale-output guard
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    # No basic_auth_context — internal dev site has no Traefik wall.
+    ctx = browser.new_context(viewport=DEFAULT_VIEWPORT)
+    page = ctx.new_page()
+    page.goto(f"{DEVSITE_URL}/<bug-page-path>")
+    # Hardcoded anondb-seed defaults — see §9 "Credentials" above.
+    compucorp_drupal_login_autodetect(page, "compucorp_admin", "compucorp_admin",
+                                       site=DEVSITE_URL)
+    # Navigate to the bug location (same flow as before-pass `reproduce`).
+    reproduce_after_state(page)
+    assert_bug_fixed(page)                     # inverse assertion — must fire
+    page.screenshot(path="after.png", full_page=True)
+    browser.close()
+```
+
+### `assert_bug_fixed` contract
+
+Same as §8: a Playwright assertion that fires when the bug is GONE. For non-DOM checks (HTTP response shape, API result), assert against the `Response` object from `page.request.*`. The screenshot is captured AFTER the assertion fires; if the assertion doesn't fire, `after.png` is not produced and step 12b-bis treats this as `blocked-verify` (per WORKFLOW.md AGENT_DONE schema). For pure-HTTP cases where a screenshot doesn't add evidence, the assertion firing without exception is itself the proof — capture a screenshot of `/admin/reports/dblog` or another evidence page as the post-verification artifact.
+
+### Failure modes (mapped to WORKFLOW.md step 12b-bis)
+
+| §9 failure | 12b-bis disposition |
+|---|---|
+| §9a: `assert_bug_reproduced` doesn't fire | Log warning, use staging `before.png`, continue to Phase B. |
+| §9b: `assert_bug_fixed` doesn't fire | **BLOCK** — `blocked-verify`, no PR. |
+| Playwright timeout / unreachable (either phase) | Continue to 12c with `## Comments` note. |
+| Drupal login fails (anondb-seed default changed on this client) | Continue to 12c with `## Comments` note. First dry-run will reveal if this is real. |
+| `assert_staging_host` rejects the host | Defensive: should never happen (Jenkins only produces `*.cc-test.site`). If it does, treat as Jenkins console parse failure — continue to 12c with `## Comments` note. |

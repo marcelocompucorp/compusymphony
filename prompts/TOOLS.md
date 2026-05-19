@@ -160,13 +160,13 @@ Useful for: confirming "did our send actually happen", looking at bounce reasons
 
 **PII warning.** Mail Activity responses contain **recipient email addresses** and sometimes subject lines, both of which are PII. The full JSONL transcript of your run is persisted by the audit (`analyze-run.sh`) and visible to operators reviewing the run. When citing Mail Activity evidence in the PR description or Jira comment, **redact recipient emails** (`r***@example.com`) and avoid pasting subject lines verbatim. Quote only the structural evidence — timestamps, status codes, bounce reasons — that is needed to support the fix.
 
-## Jenkins (build/deploy status)
+## Jenkins (build/deploy status + two carved-out triggers)
 
-**Purpose:** check CI build status for a PR / branch, fetch build logs when CI is the only test environment (per WORKFLOW.md verification step).
+**Purpose:** check CI build status for a PR / branch, fetch build logs, AND trigger the two carved-out dev-site jobs per WORKFLOW.md step 12b-bis.
 
-**Auth:** `$JENKINS_URL`, `$JENKINS_USER`, `$JENKINS_TOKEN`. Token is scoped to read; cannot trigger builds.
+**Auth:** `$JENKINS_URL`, `$JENKINS_USER`, `$JENKINS_TOKEN`. The bot user (`openclawautomation`) is in Jenkins group `compucorp*openclaw_automation`, which has Build permission on the dev-site jobs (verified 2026-05-18 in the Jenkins UI). The token is a standard user API token; its capabilities mirror the user's ACL.
 
-**Pattern:**
+**Read patterns:**
 ```bash
 # Build status for a specific job + build number:
 curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" \
@@ -177,7 +177,36 @@ curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" \
   "$JENKINS_URL/job/<job-name>/lastBuild/consoleText" | tail -200
 ```
 
-Useful for: cross-check that a CI build passed before declaring the fix "verified on CI" in PR Comments. Do NOT attempt build triggers (`POST .../build`) — invariant #5 prohibits, and the token has no scope for it.
+**Allowed writes** (per WORKFLOW.md invariant #5 carve-out):
+
+The agent may trigger exactly these two jobs, in this order, and no others:
+
+**Phase A — Create Dev Site** (broken tag + DB):
+```
+/job/Test_Jobs/job/Create%20Dev%20Site%20-%20Client%20Specific%20-%20Pipeline%20Test
+```
+_(temporary — Groovy pipeline test job; flip to `Deployments/Dev Sites - Compucontainer/Create Dev Site - Client Specific` when promoted to prod)_
+Always go through `repro_helpers.trigger_dev_site(...)` + `poll_until_deployed(...)` — never raw curl. Job parameters: `git_repo`, `git_tag` (the broken tag from `BASE_COMMIT`), `anonymised_database_url` (bare staging hostname OR anondbs URL), `lifespan` (1–31 internal / 1–90 public; default 14/30), `public_site`, `client_name` (required iff `public_site=true`), `MAUTIC_ENABLED`, `REDIS_ENABLED`.
+
+**Hostname extraction:** the resulting dev-site hostname is NOT predictable from inputs — it's auto-generated as `<adverb><adjective><animal>.cc-test.site` (internal) or `…public.cc-test.site` (public). The downstream `Pipeline-Mysql8` job emits one line in the console log of the parent build: `Pipeline-Mysql8 #N-<host> completed. Result was SUCCESS`. `poll_until_deployed` walks the queue → build → console and returns the host.
+
+**Phase B — Release Dev Site** (fix branch, same data, no DB reimport):
+```
+/job/Deployments/job/Dev%20Sites%20-%20Compucontainer/job/_Release%20Dev%20Site
+```
+Always go through `repro_helpers.trigger_release_devsite(site_url=<host>, git_tag=<fix_tag>)` + `poll_until_released(...)` — never raw curl. Passes `anonymised_database_url=""` to skip DB reimport and preserve the Phase A data state.
+
+**Non-goals (not supported — do not attempt):**
+- Triggering Phase B without a successful Phase A (no dev site to release to).
+- Passing a non-empty `anonymised_database_url` to Phase B (would reimport DB and destroy Phase A data state).
+- Triggering Phase A for extension/module repos (need parent-site + post-deploy swap — out of scope for Phase 1).
+
+**Hard constraints (invariant #5 — audit enforces):**
+- Only the two job paths above. No other Jenkins job, ever.
+- POST (build trigger) only. No DELETE/PUT/PATCH, no parameter edits, no job/folder mutations.
+- At most two triggers per agent run (0 = skipped, 1 = Phase A completed + Phase B skipped, 2 = full success). `> 2` = violation.
+- Phase A before Phase B; both before `gh pr create` (12c) — i.e. inside step 12b-bis.
+- Both helpers are greppable by name in the audit (`analyze-run.py:detect_jenkins_writes`); using the helpers keeps call sites auditable and avoids URL-encoding mistakes.
 
 ## Netdata Cloud (infra metrics, alarms)
 
