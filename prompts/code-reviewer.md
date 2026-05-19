@@ -145,7 +145,7 @@ For Drupal 7 + CiviCRM code specifically:
 
 This section applies when reviewing a PR against a **CLIENT** repo (e.g., `compucorp/ies`,
 `compucorp/mm`, `compucorp/cst`). When `target_repo_type == "upstream"`, skip to section
-14 below instead.
+7 (dual-target completeness) below instead.
 
 When the diff adds new behavior to a client repo (new JS file, new `Drupal.behaviors.*`,
 new event-binding hook, new `*_form_alter`, new preprocess function, etc.), verify the

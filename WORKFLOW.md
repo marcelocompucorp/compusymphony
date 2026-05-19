@@ -489,14 +489,14 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
       git -C ./repo-client checkout -b qa-{{ issue.identifier }}
       ```
 
-   3. Run patch propagation:
+   3. Run patch propagation. `APPLY_DIR` is relative to the **client repo root** (e.g. `profiles/compuclient/modules/contrib/core_website`). All commands run from the workspace root — use `-C ./repo-client` consistently so `git apply` writes into the correct directory tree:
       ```bash
       git -C ./repo-upstream diff HEAD~1..HEAD > /tmp/upstream.patch
-      git apply --directory="$APPLY_DIR" --check /tmp/upstream.patch
+      git -C ./repo-client apply --directory="$APPLY_DIR" --check /tmp/upstream.patch
       ```
       - **`--check` passes** (expected common case): apply the patch, commit:
         ```bash
-        git apply --directory="$APPLY_DIR" /tmp/upstream.patch
+        git -C ./repo-client apply --directory="$APPLY_DIR" /tmp/upstream.patch
         # Stage only the files touched by the patch (non-interactive)
         git -C ./repo-client add "$APPLY_DIR"
         git -C ./repo-client commit -m \
@@ -506,16 +506,16 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
       - **`--check` fails**: attempt 3-way merge:
         ```bash
-        git apply --directory="$APPLY_DIR" --3way /tmp/upstream.patch
+        git -C ./repo-client apply --directory="$APPLY_DIR" --3way /tmp/upstream.patch
         ```
         If 3way succeeds: `git -C ./repo-client add "$APPLY_DIR"`, commit, set `PROPAGATION_STATUS=context-resolved`. Note in Jira comment later.
         If 3way also fails: skip QA branch; set `PROPAGATION_STATUS=skipped`; note `AGENT_DONE` will be `success-upstream-only` if everything else passes.
 
    4. When `PROPAGATION_STATUS != skipped`: push the QA branch:
       ```bash
-      git push <client-remote> qa-{{ issue.identifier }}
+      git -C ./repo-client push <client-remote> qa-{{ issue.identifier }}
       ```
-      **This push must happen before Phase B (the Jenkins dev-site deploy needs the branch on the remote) and before the reviewer runs (section 14 checks for its presence).**
+      **This push must happen before Phase B (the Jenkins dev-site deploy needs the branch on the remote) and before the reviewer runs (section 7 checks for its presence).**
 
    **11b. Push the upstream branch** (`./repo-upstream/`):
    Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT_UPSTREAM` per invariant 3 and step 5's RC detection). Commit message starts with `{{ issue.identifier }}:`. Push to the upstream repo remote. The reviewer needs this branch for the diff.
