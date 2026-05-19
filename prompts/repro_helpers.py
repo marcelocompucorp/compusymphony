@@ -516,8 +516,8 @@ def lifecycle_test_user(admin_page: "Page", username: str, password: str,
 # update the audit detector and WORKFLOW.md in the same commit.
 #
 _DEVSITE_JOB_PATH = (
-    "/job/Deployments/job/Dev%20Sites%20-%20Compucontainer"
-    "/job/Create%20Dev%20Site%20-%20Client%20Specific"
+    "/job/Test_Jobs"
+    "/job/Create%20Dev%20Site%20-%20Client%20Specific%20-%20Pipeline%20Test"
 )
 
 # Hostname extraction: the downstream Pipeline-Mysql8 job emits a line like
