@@ -443,15 +443,13 @@ For HTTP-only surfaces (webhooks with no UI page), use `page.request.post(url, j
 Different from §8's existing-staging-site path. Fresh sites have:
 
 - **No Traefik Basic Auth.** `public_site=False` means no gateway wall — skip the `basic_auth_context` call entirely; a plain `browser.new_context()` works.
-- **Drupal admin** = `compucorp_admin` / `compucorp_admin`. This is the anondb seed default that ships with every Jenkins-spun dev site. Do NOT consult sysPass for these — there's no per-site entry for fresh agent sites.
+- **Drupal admin credentials depend on which DB was used.** Use `get_devsite_drupal_admin_creds(ANONDB_URL_USED)` where `ANONDB_URL_USED` is the value passed to `trigger_dev_site` as `anonymised_database_url` in Phase A:
+  - **Staging DB** (bare `*.cc-staging.site` hostname, e.g. `ies2.cc-staging.site`): the dev site replicates the staging database, so the Drupal admin password is the same as on staging. `get_devsite_drupal_admin_creds` looks this up from sysPass automatically. Falls back to `compucorp_admin/compucorp_admin` if sysPass has no matching account.
+  - **Anonymised DB** (anondbs URL or empty string): fresh anonymised database always uses `compucorp_admin` / `compucorp_admin`.
 
-This is intentionally different from how the agent treats existing client staging sites (which DO have Traefik Basic Auth and DO use sysPass per `prompts/TOOLS.md` §Compucorp dev sites). The before-pass (against the ticket's staging site) keeps using sysPass; only the after-pass against the new dev site uses the hardcoded pair.
-
-**Risk acknowledged (validate on first dry-run).** `prompts/TOOLS.md` line 242 says the historical `compucorp_admin/compucorp_admin` pair is "NOT reliable for current staging sites — always use sysPass." That note applies to **existing client staging sites** which are long-lived and may have had their admin password rotated. Fresh anondb-restored dev sites are expected to ship with the seed default unchanged — but this assumption has not been verified end-to-end in the agent path. If the first dry-run fails at the Drupal login step (`compucorp_drupal_login_autodetect` raises after detecting the form), the operator should inspect what creds the fresh site actually uses (sysPass entry created post-deploy? different default in the anondb being seeded? `compucorp/mysql-database-anonymizer` rewriting the users table?) and update this section.
-
-**Form-shape autodetect.** `compucorp_drupal_login_autodetect` now handles both:
-- SSP two-step (used by client staging sites with the SSP theme — e.g. `ies2.cc-staging.site`)
-- Standard Drupal 7 one-step (used by fresh dev sites that don't ship SSP)
+**Form-shape autodetect.** `compucorp_drupal_login_autodetect` handles both:
+- SSP two-step (client staging sites with SSP theme — e.g. `ies2.cc-staging.site`)
+- Standard Drupal 7 one-step (fresh dev sites without SSP)
 The helper logs which shape it detected; check the agent transcript if login behaves unexpectedly.
 
 ### §9a — Phase A: before.png on dev site at broken tag
@@ -461,13 +459,17 @@ Called by 12b-bis step A5. The dev site is running `BASE_COMMIT` (the broken tag
 ```python
 from repro_helpers import (
     assert_staging_host, compucorp_drupal_login_autodetect,
+    dismiss_cookie_banner, get_devsite_drupal_admin_creds,
     DEFAULT_VIEWPORT,
 )
 import pathlib
 
 DEVSITE_URL = "https://<DEVSITE_HOST>"     # from poll_until_deployed (Phase A)
+ANONDB_URL_USED = "<value passed as anonymised_database_url to trigger_dev_site>"
 assert_staging_host(DEVSITE_URL)
 pathlib.Path("before.png").unlink(missing_ok=True)   # stale-output guard
+
+admin_user, admin_pass = get_devsite_drupal_admin_creds(ANONDB_URL_USED)
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
@@ -475,9 +477,11 @@ with sync_playwright() as p:
     ctx = browser.new_context(viewport=DEFAULT_VIEWPORT)
     page = ctx.new_page()
     page.goto(f"{DEVSITE_URL}/<bug-page-path>")
-    # Hardcoded anondb-seed defaults — see §9 "Credentials" above.
-    compucorp_drupal_login_autodetect(page, "compucorp_admin", "compucorp_admin",
-                                       site=DEVSITE_URL)
+    dismiss_cookie_banner(page)                # always call — no-op if not present
+    # Only log in if the bug's symptom requires authentication to observe.
+    # If the bug is visible anonymously, omit this call.
+    compucorp_drupal_login_autodetect(page, admin_user, admin_pass,
+                                      site=DEVSITE_URL)
     # Same reproduce flow as the staging before-pass.
     reproduce(page)
     assert_bug_reproduced(page)                # must fire — confirms bug is present
@@ -494,13 +498,17 @@ Called by 12b-bis step B3. The same dev site is now running the agent's fix bran
 ```python
 from repro_helpers import (
     assert_staging_host, compucorp_drupal_login_autodetect,
+    dismiss_cookie_banner, get_devsite_drupal_admin_creds,
     DEFAULT_VIEWPORT,
 )
 import pathlib
 
 DEVSITE_URL = "https://<DEVSITE_HOST>"     # same host as Phase A
+ANONDB_URL_USED = "<same value used in Phase A>"
 assert_staging_host(DEVSITE_URL)
 pathlib.Path("after.png").unlink(missing_ok=True)    # stale-output guard
+
+admin_user, admin_pass = get_devsite_drupal_admin_creds(ANONDB_URL_USED)
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
@@ -508,13 +516,27 @@ with sync_playwright() as p:
     ctx = browser.new_context(viewport=DEFAULT_VIEWPORT)
     page = ctx.new_page()
     page.goto(f"{DEVSITE_URL}/<bug-page-path>")
-    # Hardcoded anondb-seed defaults — see §9 "Credentials" above.
-    compucorp_drupal_login_autodetect(page, "compucorp_admin", "compucorp_admin",
-                                       site=DEVSITE_URL)
+    dismiss_cookie_banner(page)                # always call — no-op if not present
     # Navigate to the bug location (same flow as before-pass `reproduce`).
     reproduce_after_state(page)
     assert_bug_fixed(page)                     # inverse assertion — must fire
     page.screenshot(path="after.png", full_page=True)
+
+    # --- Logged-in regression check ---
+    # Verify the fixed page still works correctly for an authenticated user.
+    # This catches regressions where the fix broke the page for logged-in users
+    # while appearing correct for anonymous visitors.
+    # Only omit this check when the fix is purely anonymous-visible AND the
+    # page is fully gated (logged-in state has no additional observable surface).
+    page.goto(f"{DEVSITE_URL}/user/logout", wait_until="networkidle")
+    compucorp_drupal_login_autodetect(page, admin_user, admin_pass,
+                                      site=DEVSITE_URL)
+    page.goto(f"{DEVSITE_URL}/<bug-page-path>", wait_until="networkidle")
+    dismiss_cookie_banner(page)
+    assert_bug_fixed(page)                     # must also fire when logged in
+    # Take a separate logged-in screenshot if the page looks meaningfully
+    # different from the anonymous view — append to after.png or save separately.
+
     browser.close()
 ```
 
@@ -529,5 +551,6 @@ Same as §8: a Playwright assertion that fires when the bug is GONE. For non-DOM
 | §9a: `assert_bug_reproduced` doesn't fire | Log warning, use staging `before.png`, continue to Phase B. |
 | §9b: `assert_bug_fixed` doesn't fire | **BLOCK** — `blocked-verify`, no PR. |
 | Playwright timeout / unreachable (either phase) | Continue to 12c with `## Comments` note. |
-| Drupal login fails (anondb-seed default changed on this client) | Continue to 12c with `## Comments` note. First dry-run will reveal if this is real. |
+| Drupal login fails (`get_devsite_drupal_admin_creds` fallback tried, still rejected) | Continue to 12c with `## Comments` note. Operator must inspect creds. |
+| Logged-in regression check fails (`assert_bug_fixed` fires anonymous but not logged-in) | **BLOCK** — `blocked-verify`. The fix breaks the authenticated user flow. |
 | `assert_staging_host` rejects the host | Defensive: should never happen (Jenkins only produces `*.cc-test.site`). If it does, treat as Jenkins console parse failure — continue to 12c with `## Comments` note. |

@@ -1131,3 +1131,222 @@ class TestPollUntilReleased:
             self._QUEUE_URL, site_url=self._HOST, timeout_s=300
         )
         assert result == self._HOST
+
+
+# ---------- _extract_devsite_hostname — colon format (IESBUILD-242 finding) ----------
+
+
+class TestExtractDevsiteHostnameColonFormat:
+    """The Groovy test pipeline emits 'completed: SUCCESS' (colon, no 'Result was').
+    The original regex only matched 'completed. Result was SUCCESS' — this caused
+    a manual recovery step during the IESBUILD-242 dry-run. Both formats must match."""
+
+    def test_extracts_colon_completed_success(self):
+        """'completed: SUCCESS' format (Groovy test pipeline, IESBUILD-242 dry-run)."""
+        console = (
+            "Build Deployments » Dev Sites - Compucontainer » Pipeline-Mysql8 "
+            "#1258-dailynicemackerel.docker.cc-test.site completed: SUCCESS\n"
+        )
+        assert rh._extract_devsite_hostname(console) == \
+            "dailynicemackerel.docker.cc-test.site"
+
+    def test_extracts_dot_result_was_success_still_works(self):
+        """Original 'completed. Result was SUCCESS' format still accepted."""
+        console = (
+            "Pipeline-Mysql8 "
+            "#999-happycleverotter.cc-test.site completed. Result was SUCCESS\n"
+        )
+        assert rh._extract_devsite_hostname(console) == \
+            "happycleverotter.cc-test.site"
+
+    def test_colon_failure_not_extracted(self):
+        """'completed: FAILURE' must not yield a hostname."""
+        console = (
+            "Pipeline-Mysql8 #5-failednastyfish.docker.cc-test.site completed: FAILURE\n"
+        )
+        assert rh._extract_devsite_hostname(console) is None
+
+    def test_public_site_colon_format(self):
+        """Public sites with colon format are also extracted correctly."""
+        console = (
+            "Pipeline-Mysql8 "
+            "#42-quickbrownfox.public.cc-test.site completed: SUCCESS\n"
+        )
+        assert rh._extract_devsite_hostname(console) == \
+            "quickbrownfox.public.cc-test.site"
+
+
+# ---------- poll_until_released — build_url caching (B3) ----------
+
+
+class TestPollUntilReleasedBuildUrl:
+    """poll_until_released gains the same build_url= caching that poll_until_deployed
+    has: when a build_url is provided, Phase 1 queue polling is skipped entirely.
+    This handles the Jenkins queue-404 window (~5 min after build starts) that
+    caused a manual recovery step in the IESBUILD-242 dry-run."""
+
+    _QUEUE_URL = "https://jenkins.example/queue/item/99999/"
+    _BUILD_URL = "https://jenkins.example/job/Release/42/"
+    _HOST = "dailynicemackerel.docker.cc-test.site"
+
+    def _make_get(self, responses):
+        it = iter(responses)
+        def fake_get(url, auth, timeout):
+            return next(it)
+        return fake_get
+
+    def test_skips_phase1_when_build_url_provided(self, jenkins_env, monkeypatch):
+        """When build_url is given, the queue URL is never called."""
+        get_calls = []
+
+        def fake_get(url, auth, timeout):
+            get_calls.append(url)
+            return _FakeResponse(json_data={"result": "SUCCESS"})
+
+        monkeypatch.setattr(rh.requests, "get", fake_get)
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        result = rh.poll_until_released(
+            self._QUEUE_URL,
+            site_url=self._HOST,
+            build_url=self._BUILD_URL,
+            timeout_s=300,
+        )
+        assert result == self._HOST
+        # Must only call the build URL, never the queue URL
+        assert all(self._BUILD_URL in u for u in get_calls)
+        assert not any("queue" in u for u in get_calls)
+
+    def test_build_url_none_still_polls_queue(self, jenkins_env, monkeypatch):
+        """Default (build_url=None) still goes through Phase 1 queue polling."""
+        responses = [
+            _FakeResponse(json_data={"executable": {"url": self._BUILD_URL}, "cancelled": False}),
+            _FakeResponse(json_data={"result": "SUCCESS"}),
+        ]
+        monkeypatch.setattr(rh.requests, "get", self._make_get(responses))
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        result = rh.poll_until_released(
+            self._QUEUE_URL, site_url=self._HOST, timeout_s=300
+        )
+        assert result == self._HOST
+
+    def test_queue_404_without_build_url_raises_runtime_error(
+        self, jenkins_env, monkeypatch
+    ):
+        """Queue 404 (item purged) raises RuntimeError with guidance to use build_url=."""
+        monkeypatch.setattr(
+            rh.requests, "get",
+            lambda url, auth, timeout: _FakeResponse(status=404),
+        )
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        with pytest.raises(RuntimeError, match="build_url"):
+            rh.poll_until_released(
+                self._QUEUE_URL, site_url=self._HOST, timeout_s=300
+            )
+
+    def test_queue_404_with_build_url_skips_to_phase2(self, jenkins_env, monkeypatch):
+        """Even if queue URL would 404, build_url= bypasses queue entirely."""
+        call_count = [0]
+
+        def fake_get(url, auth, timeout):
+            call_count[0] += 1
+            if "queue" in url:
+                return _FakeResponse(status=404)
+            return _FakeResponse(json_data={"result": "SUCCESS"})
+
+        monkeypatch.setattr(rh.requests, "get", fake_get)
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        result = rh.poll_until_released(
+            self._QUEUE_URL,
+            site_url=self._HOST,
+            build_url=self._BUILD_URL,
+            timeout_s=300,
+        )
+        assert result == self._HOST
+        # Queue never polled
+        assert call_count[0] == 1  # only the build URL
+
+    def test_build_url_respects_raise_on_timeout_false(self, jenkins_env, monkeypatch):
+        """build_url= path still returns None on timeout when raise_on_timeout=False."""
+        fake_now = [0.0]
+        monkeypatch.setattr(rh.time, "monotonic", lambda: fake_now[0])
+        monkeypatch.setattr(rh.time, "sleep", lambda s: fake_now.__setitem__(0, fake_now[0] + s))
+
+        def fake_get(url, auth, timeout):
+            fake_now[0] += 200
+            return _FakeResponse(json_data={"result": None})
+
+        monkeypatch.setattr(rh.requests, "get", fake_get)
+
+        result = rh.poll_until_released(
+            self._QUEUE_URL,
+            site_url=self._HOST,
+            build_url=self._BUILD_URL,
+            timeout_s=90,
+            raise_on_timeout=False,
+        )
+        assert result is None
+
+
+# ---------- get_devsite_drupal_admin_creds (B1) ----------
+
+
+class TestGetDevsiteDrupalAdminCreds:
+    """Helper that returns (username, password) for Drupal admin login on a dev site.
+
+    Credential source depends on which DB was used to create the dev site:
+      - Staging DB (anondb_url is a bare *.cc-staging.site hostname):
+        dev site replicates staging DB → fetch creds from sysPass.
+      - Anonymised DB (anondb_url is an anondbs URL or anything else):
+        fresh anon DB → always compucorp_admin / compucorp_admin.
+    """
+
+    def test_anondbs_url_returns_compucorp_admin(self):
+        """An anondbs URL → compucorp_admin/compucorp_admin, no sysPass call."""
+        username, password = rh.get_devsite_drupal_admin_creds(
+            "https://anondbs.cc-infra.tools/dir.php?name=ies2.cc-staging.site"
+        )
+        assert username == "compucorp_admin"
+        assert password == "compucorp_admin"
+
+    def test_empty_anondb_url_returns_compucorp_admin(self):
+        """Empty string (no DB reimport path) → compucorp_admin/compucorp_admin."""
+        username, password = rh.get_devsite_drupal_admin_creds("")
+        assert username == "compucorp_admin"
+        assert password == "compucorp_admin"
+
+    def test_staging_hostname_calls_syspass(self, monkeypatch):
+        """Bare staging hostname → sysPass lookup; returned creds passed through."""
+        captured = {}
+
+        def fake_get_syspass(search, *, prefer_name=None):
+            captured["search"] = search
+            captured["prefer_name"] = prefer_name
+            return {"login": "admin", "password": "s3cr3t"}
+
+        monkeypatch.setattr(rh, "get_syspass_cred", fake_get_syspass)
+
+        username, password = rh.get_devsite_drupal_admin_creds("ies2.cc-staging.site")
+        assert username == "admin"
+        assert password == "s3cr3t"
+        assert captured["search"] == "ies2.cc-staging.site"
+
+    def test_staging_hostname_syspass_failure_falls_back(self, monkeypatch):
+        """If sysPass lookup raises (no account found), fall back to compucorp_admin."""
+        monkeypatch.setattr(
+            rh, "get_syspass_cred",
+            lambda *a, **kw: (_ for _ in ()).throw(ValueError("no match")),
+        )
+
+        username, password = rh.get_devsite_drupal_admin_creds("ies2.cc-staging.site")
+        assert username == "compucorp_admin"
+        assert password == "compucorp_admin"
+
+    def test_non_staging_non_anondbs_returns_compucorp_admin(self):
+        """Any other value (bare prod hostname etc.) → compucorp_admin/compucorp_admin."""
+        username, password = rh.get_devsite_drupal_admin_creds("www.ies.org.uk")
+        assert username == "compucorp_admin"
+        assert password == "compucorp_admin"

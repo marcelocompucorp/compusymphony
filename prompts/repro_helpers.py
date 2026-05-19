@@ -522,14 +522,18 @@ _DEVSITE_JOB_PATH = (
 
 # Hostname extraction: the downstream Pipeline-Mysql8 job emits a line like
 # "Pipeline-Mysql8 #1237-uniformlycreativegrizzly.public.cc-test.site
-# completed. Result was SUCCESS". Three observed hostname shapes:
+# completed. Result was SUCCESS"   (production freestyle job)
+# OR
+# "Pipeline-Mysql8 #1258-dailynicemackerel.docker.cc-test.site completed: SUCCESS"
+#                                  (Groovy pipeline test job — observed IESBUILD-242)
+# Both formats must match. Three observed hostname shapes:
 #   - *.public.cc-test.site    (public sites)
 #   - *.docker.cc-test.site    (internal Docker-stack sites, seen in IESBUILD-242)
 #   - *.cc-test.site           (bare internal sites)
 # We only accept SUCCESS lines — a FAILURE line never yields a usable hostname.
 _DEVSITE_HOSTNAME_RE = re.compile(
     r"Pipeline-Mysql8\s+#\d+-([a-z0-9-]+(?:\.(?:public|docker))?\.cc-test\.site)"
-    r"\s+completed\.\s+Result\s+was\s+SUCCESS",
+    r"\s+completed[.:](?:\s+Result\s+was)?\s+SUCCESS",
     re.IGNORECASE,
 )
 
@@ -879,6 +883,7 @@ def poll_until_released(
     queue_url: str,
     *,
     site_url: str,
+    build_url: str | None = None,
     timeout_s: int = 1800,
     raise_on_timeout: bool = True,
 ) -> str | None:
@@ -894,14 +899,20 @@ def poll_until_released(
     API symmetry with `poll_until_deployed`.
 
     Parameters:
-        queue_url: Jenkins queue-item URL returned by `trigger_release_devsite`.
-        site_url:  The dev-site hostname (already known from Phase A). Returned
-                   unchanged on SUCCESS.
-        timeout_s: Max seconds to wait in this call (default 1800s = 30 min).
+        queue_url:  Jenkins queue-item URL returned by `trigger_release_devsite`.
+        site_url:   The dev-site hostname (already known from Phase A). Returned
+                    unchanged on SUCCESS.
+        build_url:  If the caller already has the build URL (e.g. from a previous
+                    90-s chunk where the queue item was resolved before purge),
+                    pass it here to skip Phase 1 entirely. Cache to
+                    `.release-build-url` for stall-detector restart safety —
+                    same pattern as `poll_until_deployed`'s `build_url=` param.
+        timeout_s:  Max seconds to wait in this call (default 1800s = 30 min).
         raise_on_timeout: If False, return None on timeout instead of raising.
 
     Raises:
-        RuntimeError: build FAILURE, ABORTED, or queue item cancelled. Always
+        RuntimeError: build FAILURE, ABORTED, queue item cancelled, or queue
+                      returned 404 (purged — pass build_url= to skip). Always
                       propagated even when raise_on_timeout=False.
         TimeoutError: deadline exceeded (only when raise_on_timeout=True).
     """
@@ -909,22 +920,33 @@ def poll_until_released(
     deadline = time.monotonic() + timeout_s
 
     # Phase 1: wait for the queue item to resolve to a build executor.
-    build_url: str | None = None
-    while time.monotonic() < deadline:
-        r = requests.get(f"{queue_url}api/json", auth=auth, timeout=15)
-        r.raise_for_status()
-        body = r.json()
-        if body.get("cancelled"):
-            raise RuntimeError(
-                f"Jenkins Release Dev Site queue item {queue_url} was cancelled "
-                f"(reason: {body.get('why')!r})"
-            )
-        executable = body.get("executable") or {}
-        if executable.get("url"):
-            build_url = executable["url"]
-            break
-        time.sleep(5)
-    if not build_url:
+    # Skip entirely when build_url is already known (stall-detector restart
+    # — queue item may have been purged by Jenkins ~5 min after build starts).
+    resolved_build_url: str | None = build_url
+    if resolved_build_url is None:
+        while time.monotonic() < deadline:
+            r = requests.get(f"{queue_url}api/json", auth=auth, timeout=15)
+            if r.status_code == 404:
+                raise RuntimeError(
+                    f"Jenkins Release Dev Site queue item {queue_url!r} returned "
+                    "404 — the item was purged after the build started (Jenkins "
+                    "purges ~5 min after build begins). On the next stall-detector "
+                    "iteration, pass the build URL via build_url= to skip Phase 1. "
+                    "Cache it to .release-build-url before calling."
+                )
+            r.raise_for_status()
+            body = r.json()
+            if body.get("cancelled"):
+                raise RuntimeError(
+                    f"Jenkins Release Dev Site queue item {queue_url} was cancelled "
+                    f"(reason: {body.get('why')!r})"
+                )
+            executable = body.get("executable") or {}
+            if executable.get("url"):
+                resolved_build_url = executable["url"]
+                break
+            time.sleep(5)
+    if not resolved_build_url:
         if not raise_on_timeout:
             return None
         raise TimeoutError(
@@ -934,7 +956,7 @@ def poll_until_released(
     # Phase 2: wait for build result.
     result: str | None = None
     while time.monotonic() < deadline:
-        r = requests.get(f"{build_url}api/json", auth=auth, timeout=15)
+        r = requests.get(f"{resolved_build_url}api/json", auth=auth, timeout=15)
         r.raise_for_status()
         body = r.json()
         if body.get("result") is not None:
@@ -945,14 +967,55 @@ def poll_until_released(
         if not raise_on_timeout:
             return None
         raise TimeoutError(
-            f"Release Dev Site build {build_url} did not complete within {timeout_s}s"
+            f"Release Dev Site build {resolved_build_url} did not complete within {timeout_s}s"
         )
     if result != "SUCCESS":
         raise RuntimeError(
-            f"Release Dev Site build {build_url} completed with result={result!r}"
+            f"Release Dev Site build {resolved_build_url} completed with result={result!r}"
         )
 
     return site_url
+
+
+def get_devsite_drupal_admin_creds(anondb_url_used: str) -> tuple[str, str]:
+    """Return (username, password) for Drupal admin login on a dev site.
+
+    The credential source depends on which DB was used to create the dev site
+    (the value passed as `anonymised_database_url` to `trigger_dev_site`):
+
+      - **Staging DB** (bare *.cc-staging.site hostname, e.g. 'ies2.cc-staging.site'):
+        The dev site replicates the staging database, so Drupal admin credentials
+        are the same as staging. Fetched from sysPass via `get_syspass_cred`.
+        Falls back to compucorp_admin/compucorp_admin if sysPass lookup fails
+        (e.g. no matching account — log a warning and continue).
+
+      - **Anonymised DB** (anondbs URL or empty string):
+        Fresh anonymised database always uses the default Drupal admin:
+        `compucorp_admin` / `compucorp_admin`.
+
+    Parameters:
+        anondb_url_used: the `anonymised_database_url` value that was passed to
+                         `trigger_dev_site` when creating the dev site in Phase A.
+                         Bare staging hostname → sysPass lookup.
+                         anondbs URL, empty string, or anything else → default creds.
+
+    Returns:
+        (username, password) tuple. SECURITY: do not log the returned password.
+    """
+    _STAGING_DB_SUFFIX = ".cc-staging.site"
+    if anondb_url_used and anondb_url_used.endswith(_STAGING_DB_SUFFIX):
+        # Staging DB path: credentials replicate the staging site.
+        try:
+            cred = get_syspass_cred(anondb_url_used)
+            return (cred["login"], cred["password"])
+        except Exception as exc:
+            print(
+                f"get_devsite_drupal_admin_creds: sysPass lookup for "
+                f"{anondb_url_used!r} failed ({exc!r}); "
+                "falling back to compucorp_admin/compucorp_admin"
+            )
+    # Anonymised DB (anondbs URL, empty string, or sysPass failure fallback).
+    return ("compucorp_admin", "compucorp_admin")
 
 
 # ---------- Non-prod hostname patterns (excluded from anondb prod lookup) ----------
