@@ -152,7 +152,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>State</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
-                    <th>Agent update</th>
+                    <th>Activity</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -188,18 +188,37 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
                     <td>
-                      <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                        <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
-                          <% end %>
-                        </span>
-                      </div>
+                      <%= case entry.step_info do %>
+                        <% %{step: step, total: total, label: label} -> %>
+                          <div class="step-stack">
+                            <div class="step-header">
+                              <span class="step-badge">Step <%= step %> / <%= total %></span>
+                              <span class="step-label"><%= label %></span>
+                            </div>
+                            <%= if total <= 15 do %>
+                              <div class="step-pips">
+                                <%= for i <- 1..total do %>
+                                  <span class={pip_class(i, step, total)}></span>
+                                <% end %>
+                              </div>
+                            <% else %>
+                              <span class="step-fraction"><%= step %> / <%= total %></span>
+                            <% end %>
+                          </div>
+                        <% nil -> %>
+                          <div class="detail-stack">
+                            <span
+                              class="event-text"
+                              title={entry.last_message || to_string(entry.last_event || "n/a")}
+                            ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                            <span class="muted event-meta">
+                              <%= entry.last_event || "n/a" %>
+                              <%= if entry.last_event_at do %>
+                                · <span class="mono numeric"><%= entry.last_event_at %></span>
+                              <% end %>
+                            </span>
+                          </div>
+                      <% end %>
                     </td>
                     <td>
                       <div class="token-stack numeric">
