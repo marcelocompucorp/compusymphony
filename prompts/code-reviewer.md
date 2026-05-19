@@ -141,6 +141,30 @@ For Drupal 7 + CiviCRM code specifically:
 - PSR-style indentation (PHPCS rules enforce most of this — Compucorp CI
   runs PHPCS, so style issues should be SUGGESTION not BLOCKER)
 
+### 5b. Linter evidence check (v1.12+)
+
+Check whether the repo has a linter config and whether there is evidence the agent ran it clean before committing.
+
+**Detect linter configs** (look in the workspace root and the repo root):
+
+| Config file | Linter |
+|---|---|
+| `.eslintrc*`, `eslint.config.*` | ESLint |
+| `tsconfig.json` | TypeScript |
+| `.phpcs.xml`, `phpcs.xml.dist` | PHPCS |
+| `phpstan.neon*` | PHPStan |
+| `phpmd.xml`, `.phpmd*` | PHPMD |
+
+**Evidence of a clean run:** look for any of:
+- A PR `## Comments` note saying "ESLint / PHPCS / tsc ran clean"
+- No lint-related errors in the diff (no obvious `var` where the rest of the file uses `const`, no missing docblock descriptions where `eslint-plugin-jsdoc` is active, no unused imports)
+- A follow-up commit in the branch that fixes lint errors (acceptable — means the agent caught and fixed them)
+
+**Severity:**
+- **WARNING** if a linter config exists AND there is no evidence it was run AND the diff contains likely lint violations (e.g. `var` in an ES6 file, missing `@param` descriptions when `eslint-plugin-jsdoc` is in devDependencies, PHP function missing `@return` when PHPCS is configured).
+- **SUGGESTION** if a linter config exists but the diff looks clean — agent probably ran it but didn't document it.
+- **Pass** if linter config exists and diff is clean with no lint-smell indicators, OR if no linter config exists in the repo.
+
 ### 5a. Upstream-first workflow (v1.12+)
 
 This section applies when reviewing a PR against a **CLIENT** repo (e.g., `compucorp/ies`,

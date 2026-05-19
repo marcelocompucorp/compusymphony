@@ -418,6 +418,39 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 9. **Verify with `superpowers:verification-before-completion`.** Run the tests. If the test suite requires a full Docker setup (CiviCRM `./scripts/run.sh setup`), do NOT run it locally — record `Tests not run locally — running on CI` and rely on CI green as the gate. For unit/script tests that run fast, run them and paste real output.
 
+   **9a. Lint and document to the repo's enforced standard (mandatory before committing).**
+
+   After implementing the fix, run the repo's linter on the changed files only. Do NOT run full-repo lint — legacy Drupal repos accumulate pre-existing violations that are not your responsibility.
+
+   **Detect and run:**
+
+   | Config file present | Linter | Command |
+   |---|---|---|
+   | `.eslintrc*` or `eslint.config.*` | ESLint | `./node_modules/.bin/eslint <changed-js-files>` |
+   | `tsconfig.json` | TypeScript | `./node_modules/.bin/tsc --noEmit` |
+   | `.phpcs.xml` or `phpcs.xml.dist` | PHPCS | `./vendor/bin/phpcs <changed-php-files>` |
+   | `phpstan.neon*` | PHPStan | `./vendor/bin/phpstan analyse <changed-php-files>` |
+   | `phpmd.xml` or `.phpmd*` | PHPMD | `./vendor/bin/phpmd <changed-php-files> text <ruleset>` |
+
+   **Installation fallback for JS linters** (when `node_modules` is absent):
+
+   ```bash
+   npm ci --ignore-scripts       # preferred — respects lockfile
+   npm install --ignore-scripts  # fallback if ci fails
+   npm install --ignore-scripts --force  # fallback for peer-dep mismatches only
+   ```
+
+   If install still fails due to **Node version skew** (host Node too new/old for the package's engine range), do NOT attempt to work around it. Document in PR `## Comments`: "Linter skipped — Node version mismatch (host: `vX`, required: `<range>`). CI will catch lint errors." and proceed.
+
+   **Fix all errors before committing.** Warnings are acceptable if they are pre-existing in the file (verify with `git stash && ./node_modules/.bin/eslint <file> && git stash pop` to confirm the warning existed before your change).
+
+   **JSDoc and PHP docblocks:** Match the documentation style enforced by the repo's linter config:
+   - If `eslint-plugin-jsdoc` is in devDependencies or `.eslintrc` extends, write complete `@param <type> <name> - <description>` and `@returns <type> <description>` for every function you add or modify.
+   - If phpcs uses `Squiz.Commenting.FunctionComment` (common in Compucorp PHP), write complete `@param` and `@return` docblock lines for every method you add or modify.
+   - Incomplete docblocks (type annotation present but description missing) are treated as errors by these rules and will fail CI.
+
+   **Opportunistic linter-config fixes (see also step 11):** If running the linter reveals a config gap that causes errors on files OTHER than yours (e.g. a missing global in `.eslintrc.json`), fix the config in the same PR. Scope creep is allowed only when the gap directly blocks the linter from passing on your changed files. Call it out in PR `## Comments`: "Also fixed pre-existing `.eslintrc.json` gap (`bootstrap` global missing) which caused false positives on `popper-extras.js`."
+
 10. **Visual verification (any ticket with an observable symptom).** Apply the two-condition gate from `prompts/visual-repro.md` § 1: (a) a specific staging URL is resolvable from the ticket (description, comments, or via step 3b Mongo lookup), AND (b) the URL passes `assert_staging_host`. The gate is no longer restricted to UI-changing diffs — backend tickets (PHP/hook/API/queue/email fixes) reproduce through the UI surface where their symptom appears (Civi admin view, `/admin/reports/dblog`, Mautic preview, SearchKit, etc.). If either condition fails, document the gate decision in PR `## Comments` (one line: "Visual repro skipped: <reason>") and proceed to step 11 with `## Manual verification required` in the PR body.
 
     When both conditions hold:
@@ -460,6 +493,11 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     10f. **Artifact lifecycle note (v1.12+):** Screenshots stay in the workspace and the JSONL transcript — they do NOT enter the client repo's git history. This avoids accumulating ~1–2 MB of CI tooling artifacts per ticket in client repo history (per Compucorp's engineering feedback on PR #229). If the team later wants permanent storage with public URLs, the correct solution is an S3/Cloudflare R2 bucket accessible to the bot PAT — that is the v2 path.
 
 11. **Commit and push.**
+
+   **Linter config fixes in the same commit (v1.12+):** If step 9a revealed a config gap (e.g. missing global in `.eslintrc.json`, missing rule in `phpcs.xml`) that caused errors on files outside your diff, include the config fix in the same commit as your code fix. Scope creep of this kind is allowed only when:
+   - The gap directly prevents the linter from passing on your changed files, AND
+   - The fix is mechanical (add a global, add an ignore rule) — not a policy change.
+   Document it in PR `## Comments`.
 
    **Single-target (client-exclusive):** Branch `agent/{{ issue.identifier }}-fix` in `./repo-client/` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`. Push to the client repo remote.
 
