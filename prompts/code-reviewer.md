@@ -189,7 +189,7 @@ correct repo was targeted:
 
 4. For PRs in upstream repos (`compu_bs5`, `ssp_core`, `core-website`, `compuclient`):
    this section produces no finding — those PRs are correctly targeted by construction.
-   Proceed to section 14 to verify the client QA branch was also pushed.
+   Proceed to section 7 (dual-target completeness) to verify the client QA branch was also pushed.
 
 ### 6. PR-body compliance (when the parent passes the prospective body)
 
@@ -322,7 +322,7 @@ Note: compiled-CSS paths covered are `dist/`, `build/`, `css/`, and `public/css/
 - **Unacceptable rationales (stay BLOCKER)**: "CI will rebuild" (verify the workflow file before accepting); "local build produced minified output incompatible with committed format" — this is the established hand-append pattern (see IES-596, IESBUILD-260 PR #228 for prior art); document the hand-append in PR `## Comments` rather than claiming exemption. The agent must commit a corresponding `dist/css/style.css` change in some form; the only question is whether it's npm-output or hand-appended.
 - **Critique the rationale per invariant 5's skip-rationale rules** — same anti-rubber-stamp posture applies.
 
-## 14. Dual-target completeness (upstream PRs only, v1.12+)
+## 7. Dual-target completeness (upstream PRs only, v1.12+)
 
 This section applies ONLY when `target_repo_type == "upstream"` (the PR is against a
 Compucorp shared upstream repo: `compu_bs5`, `ssp_core`, `core-website`, `compuclient`,
@@ -333,12 +333,13 @@ the agent also pushed a corresponding client QA branch for QA-team testing in cl
 context.
 
 Detection — check ONE of these signals (in order of reliability):
-1. `<workspace>/repo-client/.git/refs/heads/qa-<TICKET>` exists (branch was pushed and
-   the ref is in the local clone), OR
+1. `<workspace>/repo-client/.git/refs/remotes/<remote>/qa-<TICKET>` exists (proves the
+   branch reached the remote, not just local), OR
 2. `<workspace>/dry-run-summary.md` or `<workspace>/plan.md` mentions the QA branch
    URL (`https://github.com/compucorp/<client>/tree/qa-<TICKET>`), OR
-3. The parent agent passed `propagation_status` (any non-null value implies the
-   propagation step ran).
+3. The parent agent passed `propagation_status` as `byte-identical` or `context-resolved`
+   (these two values mean the patch was applied and the branch was pushed; `skipped` means
+   propagation failed and no QA branch exists).
 
 **Verdict by case:**
 

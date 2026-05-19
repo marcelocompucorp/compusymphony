@@ -868,7 +868,7 @@ def main(argv):
             for f in findings:
                 print(f"  ⚠️ {f}")
             print(
-                "     Schema: '<success|success-dual|success-upstream-only|dry-run|blocked-review|blocked-verify|blocked> <ISO-8601> <issue.identifier>'"
+                f"     Schema: '<{'|'.join(AGENT_DONE_PREFIXES)}> <ISO-8601> <issue.identifier>'"
             )
     return 0
 

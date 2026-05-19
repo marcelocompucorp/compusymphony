@@ -239,7 +239,7 @@ For when to read which playbook by task type, `prompts/PLAYBOOKS.md` is the shor
 
 When active, this is a **dry-run** for end-to-end validation. Execute the Routine normally **through step 12b-bis (dev-site deploy + after.png)**, then **STOP**. Specifically:
 
-- Do steps 1–11 fully (investigate, plan, implement, commit locally).
+- Do steps 1–11 fully (investigate, plan, implement, commit locally). **For dual-target runs: step 11a's `git push <client-remote> qa-<TICKET>` IS a real remote side effect and IS permitted in dry-run** — the `qa-<TICKET>` branch push is a prerequisite for Phase B and is functionally equivalent to the Jenkins triggers (opt-in real side effect for E2E validation). Suppress only `gh pr create` and Jira writes. The operator can manually delete the `qa-<TICKET>` branch after the dry-run if desired.
 - Do step 12a (dispatch the reviewer subagent and save `review-result-r<N>.json`) — we want to validate the reviewer path works.
 - Do step 12b-bis **fully (both Phase A and Phase B)** if the repo is in `SITE_DEPLOYABLE_REPOS` — we want to validate the entire two-phase dev-site path. **Pass `lifespan=1` to Phase A** (`trigger_dev_site`) so dry-run sites evaporate fast and don't accumulate. Phase B (`trigger_release_devsite`) has no lifespan parameter and always runs to completion. This means dry-run produces **two** Jenkins triggers (count=2 in the audit) and both `before.png` and `after.png` should land in `.agent-artifacts/`. The Jenkins triggers are real production side effects, but the user opted into autonomous dev-site provisioning; dry-run E2E validation has no value if we skip the new step.
 - **Do NOT run `gh pr create`** (skip 12c entirely). No PR is to be opened.
@@ -380,18 +380,18 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Create a convenience symlink: `ln -sfn ./repo-client ./repo-upstream` so that step references to `./repo-upstream/` resolve to the same clone. The run is single-target when `realpath ./repo-upstream` == `realpath ./repo-client`.
 
-   - **Upstream-rooted bugs (dual-target):** clone BOTH:
-     - `./repo-upstream/` ← `compucorp/<upstream-repo>` (the PR target)
-     - `./repo-client/` ← `compucorp/<client-repo>` (the QA-branch target; BASE_COMMIT = client's deployed tag from step 3b Mongo lookup)
+   - **Upstream-rooted bugs (dual-target):** clone BOTH and track two base commits:
+     - `./repo-upstream/` ← `compucorp/<upstream-repo>` (the PR target). Base commit is called **`BASE_COMMIT_UPSTREAM`** — the upstream's default branch tip, OR active RC branch if one exists (see RC detection below).
+     - `./repo-client/` ← `compucorp/<client-repo>` (the QA-branch target). Base commit is called **`BASE_COMMIT_CLIENT`** — the client's deployed tag resolved by step 3b Mongo lookup, same as for single-target runs.
 
-     For BASE_COMMIT in `./repo-upstream/`: step 3b's Mongo lookup does NOT apply (the upstream repo isn't deployed as a standalone site). Use the upstream repo's default branch tip, OR an active RC branch if one exists (see RC detection below). For `./repo-client/`: step 3b's Mongo lookup applies as usual.
+     Step 3b's Mongo lookup applies to `./repo-client/` only. It does NOT apply to `./repo-upstream/` (the upstream repo isn't deployed as a standalone site).
 
      **RC branch detection (upstream repos):**
      ```bash
      gh api "repos/<upstream>/branches" --jq '.[].name' | grep -E \
        '^7\.x-[0-9]+\.[0-9]+(\.[0-9]+|-(patch|alpha|beta)[.0-9]+)*-rc$'
      ```
-     Expect 0 or 1 match. If 0 → use default branch tip. If 1 → target the RC branch as BASE_COMMIT for `./repo-upstream/`. If ≥2 → log WARNING and use default branch tip; note the unexpected RC state in PR `## Comments`.
+     Expect 0 or 1 match. If 0 → `BASE_COMMIT_UPSTREAM` = default branch tip. If 1 → `BASE_COMMIT_UPSTREAM` = RC branch tip. If ≥2 → log WARNING and use default branch tip; note the unexpected RC state in PR `## Comments`.
 
    All subsequent steps reference `./repo-upstream/` as the primary workspace (where the fix is authored) and `./repo-client/` as the secondary (where the QA branch lands).
 
@@ -466,27 +466,39 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **11a. Propagate the fix to the client's vendored copy** (`./repo-client/`):
 
-   1. Derive the target directory in the client repo:
+   1. Derive the target directory in the client repo. The mapping from upstream repo path to client vendored path is already encoded in step 3.2's table (e.g., upstream `profiles/compuclient/themes/contrib/compu_bs5/` → `compucorp/compu_bs5`, so the mount point in the client is `profiles/compuclient/themes/contrib/compu_bs5/`). Use that mapping directly rather than `find`:
       ```bash
-      KEY_FILE=$(git -C ./repo-upstream show HEAD --name-only \
-        | grep -v '^commit\|^Author\|^Date\|^$\|^    ' | head -1)
-      find ./repo-client/profiles/compuclient -name "$(basename "$KEY_FILE")" \
-        -maxdepth 6 2>/dev/null
+      # From step 3.2's mapping, e.g. for compu_bs5 → profiles/compuclient/themes/contrib/compu_bs5
+      # For core-website module → profiles/compuclient/modules/contrib/core_website
+      # APPLY_DIR is the prefix to prepend when applying the patch to ./repo-client/
+      # e.g. APPLY_DIR="profiles/compuclient/modules/contrib/core_website"
       ```
-      - One match → derive `APPLY_DIR` from the match path minus the filename.
+      If the path is not in step 3.2's table (i.e., you reached this step via `compuco_projects.yml` lookup for an unlisted module), use `find` as a fallback:
+      ```bash
+      KEY_FILE=$(git -C ./repo-upstream diff-tree --no-commit-id --name-only -r HEAD | head -1)
+      MATCHES=$(find ./repo-client/profiles/compuclient -path "*/${KEY_FILE}" -maxdepth 8 2>/dev/null)
+      ```
+      - One match → derive `APPLY_DIR` as the path under `./repo-client/` up to (but not including) the matched file's relative portion that exists in `./repo-upstream/`.
       - Zero matches → STOP; post Jira comment describing the mismatch.
       - Multiple matches → STOP; post Jira comment asking which path is correct.
 
-   2. Run patch propagation:
+   2. Ensure `./repo-client/` is at the correct base before branching. `BASE_COMMIT_CLIENT` is the client's deployed tag resolved in step 3b for `./repo-client/`. The upstream's base is called `BASE_COMMIT_UPSTREAM` (default branch tip or RC branch tip from step 5).
+      ```bash
+      # Ensure we branch from the client's deployed tag, not a random HEAD
+      git -C ./repo-client checkout "$BASE_COMMIT_CLIENT"
+      git -C ./repo-client checkout -b qa-{{ issue.identifier }}
+      ```
+
+   3. Run patch propagation:
       ```bash
       git -C ./repo-upstream diff HEAD~1..HEAD > /tmp/upstream.patch
-      git -C ./repo-client checkout -b qa-{{ issue.identifier }}
       git apply --directory="$APPLY_DIR" --check /tmp/upstream.patch
       ```
       - **`--check` passes** (expected common case): apply the patch, commit:
         ```bash
         git apply --directory="$APPLY_DIR" /tmp/upstream.patch
-        git -C ./repo-client add -p  # stage the vendored-copy changes
+        # Stage only the files touched by the patch (non-interactive)
+        git -C ./repo-client add "$APPLY_DIR"
         git -C ./repo-client commit -m \
           "{{ issue.identifier }}: propagate upstream fix for QA testing"
         ```
@@ -496,17 +508,17 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
         ```bash
         git apply --directory="$APPLY_DIR" --3way /tmp/upstream.patch
         ```
-        If 3way succeeds: commit, set `PROPAGATION_STATUS=context-resolved`. Note in Jira comment later.
+        If 3way succeeds: `git -C ./repo-client add "$APPLY_DIR"`, commit, set `PROPAGATION_STATUS=context-resolved`. Note in Jira comment later.
         If 3way also fails: skip QA branch; set `PROPAGATION_STATUS=skipped`; note `AGENT_DONE` will be `success-upstream-only` if everything else passes.
 
-   3. When `PROPAGATION_STATUS != skipped`: push the QA branch:
+   4. When `PROPAGATION_STATUS != skipped`: push the QA branch:
       ```bash
       git push <client-remote> qa-{{ issue.identifier }}
       ```
-      **This push must happen before Phase B (the Jenkins dev-site deploy needs the branch on the remote).**
+      **This push must happen before Phase B (the Jenkins dev-site deploy needs the branch on the remote) and before the reviewer runs (section 14 checks for its presence).**
 
    **11b. Push the upstream branch** (`./repo-upstream/`):
-   Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT` per invariant 3). Commit message starts with `{{ issue.identifier }}:`. Push to the upstream repo remote. The reviewer needs this branch for the diff.
+   Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT_UPSTREAM` per invariant 3 and step 5's RC detection). Commit message starts with `{{ issue.identifier }}:`. Push to the upstream repo remote. The reviewer needs this branch for the diff.
 
 12. **Independent code review + open the PR (single coupled step).** This pair is intentionally NOT split — see invariant 9.
 
@@ -632,16 +644,25 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **B1. Push the fix tag and trigger Phase B (fast, one-shot):**
 
-   For **single-target** runs, the fix tag points to the agent branch HEAD in `./repo-client/`.
-   For **dual-target** runs, the fix tag is created at the HEAD of the `qa-<TICKET>` branch in `./repo-client/` (already pushed in step 11a) — the dev site needs the client-repo copy of the fix, not the upstream repo.
+   Both single-target and dual-target create the Jenkins tag in `./repo-client/`. The tag name must be Docker-safe (no `/`) and identifiable — use `agent-{{ issue.identifier }}-fix` in both cases. The difference is which commit it points to:
 
+   **Single-target:**
    ```bash
-   # Single-target: tag current HEAD in repo-client
-   # Dual-target: tag qa-<TICKET> HEAD in repo-client
    cd <workspace>/repo-client
-   git tag agent-{{ issue.identifier }}-fix HEAD   # or: git tag ... qa-{{ issue.identifier }}
+   # HEAD is already on agent/{{ issue.identifier }}-fix branch
+   git tag agent-{{ issue.identifier }}-fix HEAD
    git push origin agent-{{ issue.identifier }}-fix
    ```
+
+   **Dual-target:**
+   ```bash
+   cd <workspace>/repo-client
+   # Checkout the qa branch (already pushed in step 11a) to ensure HEAD is correct
+   git checkout qa-{{ issue.identifier }}
+   git tag agent-{{ issue.identifier }}-fix HEAD
+   git push origin agent-{{ issue.identifier }}-fix
+   ```
+   Note: the tag `agent-{{ issue.identifier }}-fix` on the client remote is a Jenkins deployment tag, intentionally separate from the `qa-{{ issue.identifier }}` branch name. Both exist on the client remote; the tag is deleted after Phase B (B4) per the orphan-tag cleanup rule.
    ```python
    from repro_helpers import trigger_release_devsite, devsite_git_tag
    import pathlib
@@ -734,7 +755,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Dual-target (upstream-rooted):** PR targets the **upstream repo**'s default branch (or active RC branch, per step 5 RC detection). `gh pr create` runs from inside `<workspace>/repo-upstream/`. No PR is opened on the client repo — only the `qa-<TICKET>` branch push (already done in step 11a).
 
-   When `PROPAGATION_STATUS == skipped` (3-way merge failed): still open the upstream PR. Note in PR `## Comments`: _"Client QA branch propagation failed — vendored copy has diverged. See Jira comment for operator instructions."_ `AGENT_DONE` will be `success-upstream-only`.
+   When `PROPAGATION_STATUS == skipped` (3-way merge failed): still open the upstream PR. Note in PR `## Comments`: _"Client QA branch propagation failed — vendored copy has diverged. See Jira comment for operator instructions."_ `AGENT_DONE` will be `success-upstream-only`. For the PR body's `## After` section, use the manual-verification block (step 10e's `## Manual verification required` template) — there is no `after.png` and no dev-site Phase B in this path.
 
 13. **Post the PR link + QA branch as a Jira comment** via the Atlassian MCP.
 
