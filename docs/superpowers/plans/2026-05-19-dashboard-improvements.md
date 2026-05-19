@@ -21,6 +21,7 @@
 | `elixir/WORKFLOW.md` | Add instruction to write `.symphony-status` at each step |
 | `elixir/test/symphony_elixir/orchestrator_status_test.exs` | Tests for `compute_pending/2` logic and pending in snapshot |
 | `elixir/test/symphony_elixir/presenter_step_info_test.exs` | Tests for `read_step_info/1` and `state_payload/2` error branch changes |
+| `elixir/test/symphony_elixir_web/dashboard_live_helpers_test.exs` | Unit tests for `pip_class/3`, `priority_label/1`, `priority_badge_class/1`, `truncate_title/1` |
 
 ---
 
@@ -945,7 +946,151 @@ git commit -m "docs: add .symphony-status step reporting instruction to WORKFLOW
 
 ---
 
-## Task 7: Final verification
+## Task 7: Test LiveView helper functions
+
+**Files:**
+- Create: `elixir/test/symphony_elixir_web/dashboard_live_helpers_test.exs`
+
+The LiveView rendering helpers added in Tasks 4 and 5 are pure functions — they can be tested directly without mounting a live socket.
+
+- [ ] **Step 7.1: Write failing tests**
+
+Create `elixir/test/symphony_elixir_web/dashboard_live_helpers_test.exs`:
+
+```elixir
+defmodule SymphonyElixirWeb.DashboardLiveHelpersTest do
+  use SymphonyElixir.TestSupport
+
+  # We test the helper functions exported via @doc false
+  alias SymphonyElixirWeb.DashboardLive
+
+  describe "pip_class/3" do
+    test "returns pip-done for steps before current" do
+      assert DashboardLive.pip_class_for_test(1, 3, 5) == "pip pip-done"
+      assert DashboardLive.pip_class_for_test(2, 3, 5) == "pip pip-done"
+    end
+
+    test "returns pip-active for the current step" do
+      assert DashboardLive.pip_class_for_test(3, 3, 5) == "pip pip-active"
+    end
+
+    test "returns pip-empty for steps after current" do
+      assert DashboardLive.pip_class_for_test(4, 3, 5) == "pip pip-empty"
+      assert DashboardLive.pip_class_for_test(5, 3, 5) == "pip pip-empty"
+    end
+
+    test "first step: only step 1 is active, rest are empty" do
+      assert DashboardLive.pip_class_for_test(1, 1, 4) == "pip pip-active"
+      assert DashboardLive.pip_class_for_test(2, 1, 4) == "pip pip-empty"
+    end
+
+    test "last step: all previous are done, last is active" do
+      assert DashboardLive.pip_class_for_test(3, 4, 4) == "pip pip-done"
+      assert DashboardLive.pip_class_for_test(4, 4, 4) == "pip pip-active"
+    end
+  end
+
+  describe "priority_label/1" do
+    test "maps integers 1-4 to correct labels" do
+      assert DashboardLive.priority_label_for_test(1) == "Urgent"
+      assert DashboardLive.priority_label_for_test(2) == "High"
+      assert DashboardLive.priority_label_for_test(3) == "Medium"
+      assert DashboardLive.priority_label_for_test(4) == "Low"
+    end
+
+    test "returns nil for nil priority" do
+      assert DashboardLive.priority_label_for_test(nil) == nil
+    end
+
+    test "returns nil for out-of-range integers" do
+      assert DashboardLive.priority_label_for_test(0) == nil
+      assert DashboardLive.priority_label_for_test(5) == nil
+    end
+  end
+
+  describe "priority_badge_class/1" do
+    test "maps integers 1-4 to correct CSS classes" do
+      assert DashboardLive.priority_badge_class_for_test(1) == "priority-badge priority-urgent"
+      assert DashboardLive.priority_badge_class_for_test(2) == "priority-badge priority-high"
+      assert DashboardLive.priority_badge_class_for_test(3) == "priority-badge priority-medium"
+      assert DashboardLive.priority_badge_class_for_test(4) == "priority-badge priority-low"
+    end
+
+    test "returns nil for nil and out-of-range" do
+      assert DashboardLive.priority_badge_class_for_test(nil) == nil
+      assert DashboardLive.priority_badge_class_for_test(0) == nil
+    end
+  end
+
+  describe "truncate_title/1" do
+    test "returns em-dash for nil" do
+      assert DashboardLive.truncate_title_for_test(nil) == "—"
+    end
+
+    test "returns title unchanged when 60 bytes or fewer" do
+      short = String.duplicate("a", 60)
+      assert DashboardLive.truncate_title_for_test(short) == short
+    end
+
+    test "truncates to 57 chars + ellipsis when over 60 bytes" do
+      long = String.duplicate("a", 80)
+      result = DashboardLive.truncate_title_for_test(long)
+      assert String.ends_with?(result, "…")
+      assert byte_size(result) <= 61  # 57 ASCII chars + 3-byte UTF-8 ellipsis
+    end
+
+    test "does not truncate a 60-char title" do
+      exact = String.duplicate("b", 60)
+      assert DashboardLive.truncate_title_for_test(exact) == exact
+    end
+  end
+end
+```
+
+- [ ] **Step 7.2: Add test-facing exports to `DashboardLive`**
+
+Add these `@doc false` exports to `elixir/lib/symphony_elixir_web/live/dashboard_live.ex` (after the existing private helper definitions):
+
+```elixir
+@doc false
+def pip_class_for_test(i, current_step, total), do: pip_class(i, current_step, total)
+
+@doc false
+def priority_label_for_test(priority), do: priority_label(priority)
+
+@doc false
+def priority_badge_class_for_test(priority), do: priority_badge_class(priority)
+
+@doc false
+def truncate_title_for_test(title), do: truncate_title(title)
+```
+
+- [ ] **Step 7.3: Run tests to verify they fail first**
+
+```bash
+cd elixir && mix test test/symphony_elixir_web/dashboard_live_helpers_test.exs --seed 0 2>&1 | tail -20
+```
+
+Expected: compile error — `pip_class_for_test/3` undefined (because Task 4/5 haven't been completed yet if running in isolation, or because the exports don't exist yet).
+
+- [ ] **Step 7.4: Run tests after exports are added**
+
+```bash
+cd elixir && mix test test/symphony_elixir_web/dashboard_live_helpers_test.exs --seed 0 2>&1 | tail -20
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 7.5: Commit**
+
+```bash
+cd elixir && git add test/symphony_elixir_web/dashboard_live_helpers_test.exs lib/symphony_elixir_web/live/dashboard_live.ex
+git commit -m "test: add unit tests for DashboardLive helper functions"
+```
+
+---
+
+## Task 9: Final verification
 
 - [ ] **Step 7.1: Run full test suite**
 
@@ -982,9 +1127,10 @@ Start Symphony and open the dashboard URL. Verify:
 git log --oneline -6
 ```
 
-Expected output (6 commits from this feature):
+Expected output (7 commits from this feature):
 ```
 <sha> docs: add .symphony-status step reporting instruction to WORKFLOW.md
+<sha> test: add unit tests for DashboardLive helper functions
 <sha> feat: replace Agent update column with Activity step indicator
 <sha> feat: add Queued metric card and Pending queue section to dashboard
 <sha> feat: add CSS for step pips and priority badges
