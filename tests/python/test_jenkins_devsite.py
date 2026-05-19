@@ -725,6 +725,127 @@ class TestPollUntilDeployedPartialTimeout:
                                    raise_on_timeout=False)
 
 
+# ---------- poll_until_deployed: build_url parameter + 404 degradation ----------
+
+class TestPollUntilDeployedBuildUrl:
+    """poll_until_deployed(queue_url, build_url=...) skip-Phase-1 and 404 degradation.
+
+    Motivation: the stall-detector pattern calls poll_until_deployed repeatedly
+    with the same queue_url. By the second or third call (minutes later), Jenkins
+    has purged the queue item (404). Without a build_url escape hatch, the helper
+    crashes instead of continuing to Phase 2.
+
+    Fix: accept `build_url` kwarg. If provided, skip Phase 1 entirely and go
+    straight to Phase 2 (poll the build). If Phase 1 gets HTTP 404 without a
+    build_url, raise a RuntimeError with a clear message.
+    """
+
+    _QUEUE_URL = "https://jenkins.test.local/queue/item/12179454/"
+    _BUILD_URL = "https://jenkins.test.local/job/Deployments/job/123/"
+    _CONSOLE = (
+        "Deployments » Pipeline-Mysql8 "
+        "#1259-especiallyadequatefoal.docker.cc-test.site completed. "
+        "Result was SUCCESS\n"
+    )
+
+    def _make_sequence(self, responses):
+        """Return a fake requests.get that yields responses in order."""
+        it = iter(responses)
+        def fake_get(url, auth, timeout):
+            return next(it)
+        return fake_get
+
+    def test_skips_phase1_when_build_url_provided(self, jenkins_env, monkeypatch):
+        """When build_url is given, Phase 1 queue polling is completely skipped."""
+        calls = []
+
+        def fake_get(url, auth, timeout):
+            calls.append(url)
+            if "queue" in url:
+                raise AssertionError("Phase 1 queue URL was called — should have been skipped")
+            if url.endswith("api/json"):
+                return _FakeResponse(json_data={"result": "SUCCESS"})
+            return _FakeResponse(text=self._CONSOLE)  # consoleText
+
+        monkeypatch.setattr(rh.requests, "get", fake_get)
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        host = rh.poll_until_deployed(
+            self._QUEUE_URL,
+            build_url=self._BUILD_URL,
+            timeout_s=60,
+        )
+        assert host == "especiallyadequatefoal.docker.cc-test.site"
+        assert all("queue" not in u for u in calls), "Phase 1 should not call queue URL"
+
+    def test_build_url_none_still_uses_phase1(self, jenkins_env, monkeypatch):
+        """build_url=None (default) falls through to normal Phase 1 queue polling."""
+        responses = iter([
+            _FakeResponse(json_data={"executable": {"url": self._BUILD_URL}}),
+            _FakeResponse(json_data={"result": "SUCCESS"}),
+            _FakeResponse(text=self._CONSOLE),
+        ])
+        monkeypatch.setattr(rh.requests, "get", lambda *a, **k: next(responses))
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        host = rh.poll_until_deployed(self._QUEUE_URL, timeout_s=60)
+        assert host == "especiallyadequatefoal.docker.cc-test.site"
+
+    def test_phase1_404_without_build_url_raises_runtime_error(
+        self, jenkins_env, monkeypatch
+    ):
+        """Phase 1 getting 404 on queue item (purged) raises RuntimeError with guidance."""
+        import requests as req_mod
+
+        def fake_get(url, auth, timeout):
+            return _FakeResponse(status=404)
+
+        monkeypatch.setattr(rh.requests, "get", fake_get)
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        with pytest.raises(RuntimeError, match="404"):
+            rh.poll_until_deployed(self._QUEUE_URL, timeout_s=60)
+
+    def test_phase1_404_with_build_url_skips_to_phase2(self, jenkins_env, monkeypatch):
+        """Even if someone passes both queue_url and build_url, queue is never polled."""
+        calls = []
+
+        def fake_get(url, auth, timeout):
+            calls.append(url)
+            if "queue" in url:
+                raise AssertionError("Should not poll queue when build_url is provided")
+            if url.endswith("api/json"):
+                return _FakeResponse(json_data={"result": "SUCCESS"})
+            return _FakeResponse(text=self._CONSOLE)
+
+        monkeypatch.setattr(rh.requests, "get", fake_get)
+        monkeypatch.setattr(rh.time, "sleep", lambda s: None)
+
+        host = rh.poll_until_deployed(
+            self._QUEUE_URL, build_url=self._BUILD_URL, timeout_s=60
+        )
+        assert host == "especiallyadequatefoal.docker.cc-test.site"
+        assert not any("queue" in u for u in calls)
+
+    def test_build_url_respects_raise_on_timeout_false(self, jenkins_env, monkeypatch):
+        """With build_url provided and build not completing, raise_on_timeout=False returns None."""
+        fake_now = [0.0]
+
+        def fake_get(url, auth, timeout):
+            return _FakeResponse(json_data={"result": None})
+
+        monkeypatch.setattr(rh.requests, "get", fake_get)
+        monkeypatch.setattr(rh.time, "sleep",
+                            lambda s: fake_now.__setitem__(0, fake_now[0] + s))
+        monkeypatch.setattr(rh.time, "monotonic", lambda: fake_now[0])
+
+        result = rh.poll_until_deployed(
+            self._QUEUE_URL, build_url=self._BUILD_URL,
+            timeout_s=5, raise_on_timeout=False
+        )
+        assert result is None
+
+
 # ---------- wait_until_site_up ----------
 
 class TestWaitUntilSiteUp:

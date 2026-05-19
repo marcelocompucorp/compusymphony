@@ -465,10 +465,34 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    ```python
    from repro_helpers import poll_until_deployed, wait_until_site_up
    import pathlib, sys
+
    queue_url = pathlib.Path("<workspace>/.devsite-queue").read_text().strip()
-   host = poll_until_deployed(queue_url, expect_public=False,
+
+   # Stall-detector restart safety: Jenkins purges the queue item ~5 min
+   # after the build starts. On re-invocations, pass the cached build_url
+   # to skip Phase 1 queue polling (avoids a 404 RuntimeError).
+   build_url_file = pathlib.Path("<workspace>/.devsite-build-url")
+   build_url = build_url_file.read_text().strip() if build_url_file.exists() else None
+
+   host = poll_until_deployed(queue_url, build_url=build_url,
+                              expect_public=False,
                               timeout_s=90, raise_on_timeout=False)
    if host is None:
+       # Cache the build_url for future iterations (if Phase 1 resolved it
+       # this iteration, the build_url is in .devsite-build-url if we wrote
+       # it — but poll_until_deployed doesn't expose it directly).
+       # Workaround: query the queue item once to get executable.url.
+       import requests, os
+       try:
+           r = requests.get(f"{queue_url}api/json",
+                            auth=(os.environ["JENKINS_USER"], os.environ["JENKINS_TOKEN"]),
+                            timeout=15)
+           if r.status_code == 200:
+               exe = r.json().get("executable") or {}
+               if exe.get("url"):
+                   build_url_file.write_text(exe["url"])
+       except Exception:
+           pass
        print("Phase A still building — re-run to continue polling")
        sys.exit(42)   # sentinel: agent re-runs after 60 s
    wait_until_site_up(host, timeout_s=900)

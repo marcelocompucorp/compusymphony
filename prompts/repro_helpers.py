@@ -659,6 +659,7 @@ def trigger_dev_site(
 def poll_until_deployed(
     queue_url: str,
     *,
+    build_url: str | None = None,
     timeout_s: int = 1800,
     expect_public: bool | None = None,
     raise_on_timeout: bool = True,
@@ -670,6 +671,22 @@ def poll_until_deployed(
     don't lose `after.png` evidence on legitimate slow builds. The agent's
     main thread blocks during this call; Symphony's orchestrator
     (`max_concurrent_agents: 2`) keeps other tickets moving in parallel.
+
+    `build_url` (optional): if the build URL is already known from a prior
+    stall-detector iteration (cached in `.devsite-build-url`), pass it here
+    to skip Phase 1 (queue polling) entirely and go straight to Phase 2.
+    This is required when re-invoking in the stall-detector pattern because
+    Jenkins purges the queue item ~5 min after the build starts — a second
+    call without `build_url` would get HTTP 404 on the queue item.
+
+    Recommended WORKFLOW.md usage::
+
+        build_url = pathlib.Path(".devsite-build-url").read_text().strip()
+                    if pathlib.Path(".devsite-build-url").exists() else None
+        host = poll_until_deployed(queue_url, build_url=build_url,
+                                   timeout_s=90, raise_on_timeout=False)
+        # Once Phase 1 resolves, the returned build_url is not exposed here —
+        # agents should cache it from the `build_url` arg on first success.
 
     `expect_public` cross-checks the returned hostname against what was
     requested via `trigger_dev_site(public=...)`. Pass `False` for internal
@@ -685,8 +702,10 @@ def poll_until_deployed(
     FAILURE, hostname not found) is always re-raised.
 
     Steps:
-      1. Poll `<queue_url>api/json` every 5s until `executable.url` resolves
-         (typically <5s — Jenkins assigns an executor quickly).
+      1. If `build_url` is None: poll `<queue_url>api/json` every 5s until
+         `executable.url` resolves (typically <5s — Jenkins assigns quickly).
+         If the queue item returns 404, raise `RuntimeError` (item purged —
+         pass `build_url` to skip this phase on restart).
       2. Poll `<build_url>api/json` every 30s until `result` is non-null.
       3. If `result == 'SUCCESS'`, fetch `<build_url>consoleText` and extract
          the dev-site hostname via `_extract_devsite_hostname`.
@@ -694,31 +713,42 @@ def poll_until_deployed(
 
     Raises:
         TimeoutError: total elapsed time exceeds `timeout_s`.
-        RuntimeError: build completed with `result != 'SUCCESS'`, or SUCCESS
-            but the console contains no Pipeline-Mysql8 hostname line.
+        RuntimeError: build completed with `result != 'SUCCESS'`, queue item
+            returned 404 (purged after build started), or SUCCESS but console
+            contains no Pipeline-Mysql8 hostname line.
     """
     auth = (os.environ["JENKINS_USER"], os.environ["JENKINS_TOKEN"])
     deadline = time.monotonic() + timeout_s
 
-    # Phase 1: wait for executable. Fail fast on cancellation — a cancelled
-    # queue item never produces `executable`, so without this early raise
-    # the loop would burn the full `timeout_s` (up to 15min).
-    build_url: str | None = None
-    while time.monotonic() < deadline:
-        r = requests.get(f"{queue_url}api/json", auth=auth, timeout=15)
-        r.raise_for_status()
-        body = r.json()
-        if body.get("cancelled"):
-            raise RuntimeError(
-                f"Jenkins queue item {queue_url} was cancelled "
-                f"(reason: {body.get('why')!r})"
-            )
-        executable = body.get("executable") or {}
-        if executable.get("url"):
-            build_url = executable["url"]
-            break
-        time.sleep(5)
-    if not build_url:
+    # Phase 1: wait for executable. Skip entirely when build_url is already
+    # known (stall-detector restart — queue item may have been purged by now).
+    # Fail fast on cancellation: a cancelled queue item never produces
+    # `executable`, so without this early raise the loop would burn timeout_s.
+    resolved_build_url: str | None = build_url
+    if resolved_build_url is None:
+        while time.monotonic() < deadline:
+            r = requests.get(f"{queue_url}api/json", auth=auth, timeout=15)
+            if r.status_code == 404:
+                raise RuntimeError(
+                    f"Jenkins queue item {queue_url!r} returned 404 — the item "
+                    "was purged after the build started (Jenkins purges ~5 min "
+                    "after build begins). On the next stall-detector iteration, "
+                    "pass the build URL via build_url= to skip Phase 1. "
+                    "Cache it to .devsite-build-url before calling."
+                )
+            r.raise_for_status()
+            body = r.json()
+            if body.get("cancelled"):
+                raise RuntimeError(
+                    f"Jenkins queue item {queue_url} was cancelled "
+                    f"(reason: {body.get('why')!r})"
+                )
+            executable = body.get("executable") or {}
+            if executable.get("url"):
+                resolved_build_url = executable["url"]
+                break
+            time.sleep(5)
+    if not resolved_build_url:
         if not raise_on_timeout:
             return None
         raise TimeoutError(
@@ -728,7 +758,7 @@ def poll_until_deployed(
     # Phase 2: wait for result
     result: str | None = None
     while time.monotonic() < deadline:
-        r = requests.get(f"{build_url}api/json", auth=auth, timeout=15)
+        r = requests.get(f"{resolved_build_url}api/json", auth=auth, timeout=15)
         r.raise_for_status()
         body = r.json()
         if body.get("result") is not None:
@@ -739,20 +769,20 @@ def poll_until_deployed(
         if not raise_on_timeout:
             return None
         raise TimeoutError(
-            f"Jenkins build {build_url} did not complete within {timeout_s}s"
+            f"Jenkins build {resolved_build_url} did not complete within {timeout_s}s"
         )
     if result != "SUCCESS":
         raise RuntimeError(
-            f"Jenkins build {build_url} completed with result={result!r}"
+            f"Jenkins build {resolved_build_url} completed with result={result!r}"
         )
 
     # Phase 3: extract hostname from console
-    r = requests.get(f"{build_url}consoleText", auth=auth, timeout=30)
+    r = requests.get(f"{resolved_build_url}consoleText", auth=auth, timeout=30)
     r.raise_for_status()
     host = _extract_devsite_hostname(r.text)
     if not host:
         raise RuntimeError(
-            f"Jenkins build {build_url} succeeded but no Pipeline-Mysql8 "
+            f"Jenkins build {resolved_build_url} succeeded but no Pipeline-Mysql8 "
             "hostname line found in console"
         )
 
