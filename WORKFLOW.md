@@ -528,7 +528,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Diff to pass:**
    - **Single-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-client/`
-   - **Dual-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-upstream/` (the upstream PR's diff). The client QA branch diff is byte-identical (or close after 3-way) — do NOT send it separately; the reviewer section 14 verifies only that the QA branch push happened.
+   - **Dual-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-upstream/` (the upstream PR's diff). The client QA branch diff is byte-identical (or close after 3-way) — do NOT send it separately; reviewer section 7 (dual-target completeness) verifies only that the QA branch push happened.
 
    **Additional v1.12 inputs to pass:**
    - `workspace_layout`: `"single"` or `"dual"`
