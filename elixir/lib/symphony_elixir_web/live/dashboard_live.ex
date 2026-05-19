@@ -94,6 +94,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
+            <p class="metric-label">Queued</p>
+            <p class="metric-value numeric"><%= @payload.counts.queued %></p>
+            <p class="metric-detail">Issues waiting for a free slot.</p>
+          </article>
+
+          <article class="metric-card">
             <p class="metric-label">Total tokens</p>
             <p class="metric-value numeric"><%= format_int(@payload.agent_totals.total_tokens) %></p>
             <p class="metric-detail numeric">
@@ -200,6 +206,72 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
                         <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
                       </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Pending queue</h2>
+              <p class="section-copy">
+                Issues eligible for dispatch, ordered by priority. Waiting for a free slot (max <%= max_concurrent_agents() %> running).
+              </p>
+            </div>
+          </div>
+
+          <%= if @payload.pending == [] do %>
+            <p class="empty-state">No issues are queued — all eligible issues are running or no new candidates found.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 680px;">
+                <colgroup>
+                  <col style="width: 3rem;" />
+                  <col style="width: 10rem;" />
+                  <col />
+                  <col style="width: 7rem;" />
+                  <col style="width: 6rem;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Issue</th>
+                    <th>Title</th>
+                    <th>State</th>
+                    <th>Priority</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={{entry, idx} <- Enum.with_index(@payload.pending, 1)}>
+                    <td class="numeric muted"><%= idx %></td>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.identifier %></span>
+                        <%= if entry.url do %>
+                          <a class="issue-link" href={entry.url} target="_blank" rel="noopener">link</a>
+                        <% end %>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="issue-title-text" title={entry.title || ""}>
+                        <%= truncate_title(entry.title) %>
+                      </span>
+                    </td>
+                    <td>
+                      <span class={state_badge_class(entry.state)}>
+                        <%= entry.state %>
+                      </span>
+                    </td>
+                    <td>
+                      <%= if priority_label(entry.priority) do %>
+                        <span class={priority_badge_class(entry.priority)}>
+                          <%= priority_label(entry.priority) %>
+                        </span>
+                      <% end %>
                     </td>
                   </tr>
                 </tbody>
@@ -322,6 +394,44 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp pip_class(i, current_step, _total) do
+    cond do
+      i < current_step -> "pip pip-done"
+      i == current_step -> "pip pip-active"
+      true -> "pip pip-empty"
+    end
+  end
+
+  defp priority_label(1), do: "Urgent"
+  defp priority_label(2), do: "High"
+  defp priority_label(3), do: "Medium"
+  defp priority_label(4), do: "Low"
+  defp priority_label(_), do: nil
+
+  defp priority_badge_class(1), do: "priority-badge priority-urgent"
+  defp priority_badge_class(2), do: "priority-badge priority-high"
+  defp priority_badge_class(3), do: "priority-badge priority-medium"
+  defp priority_badge_class(4), do: "priority-badge priority-low"
+  defp priority_badge_class(_), do: nil
+
+  defp truncate_title(nil), do: "—"
+  defp truncate_title(title) when byte_size(title) <= 60, do: title
+  defp truncate_title(title), do: String.slice(title, 0, 57) <> "…"
+
+  defp max_concurrent_agents, do: SymphonyElixir.Config.max_concurrent_agents()
+
+  @doc false
+  def pip_class_for_test(i, current_step, total), do: pip_class(i, current_step, total)
+
+  @doc false
+  def priority_label_for_test(priority), do: priority_label(priority)
+
+  @doc false
+  def priority_badge_class_for_test(priority), do: priority_badge_class(priority)
+
+  @doc false
+  def truncate_title_for_test(title), do: truncate_title(title)
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
