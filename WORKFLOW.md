@@ -291,7 +291,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    - **Client-exclusive** — root cause is in `sites/all/themes/custom/<site>/`, `sites/all/modules/{custom,features}/<site>/`, or another path that does NOT exist in other clients. Target: ONLY the client repo. Proceed with the standard single-repo flow (steps 5 onwards use `./repo-client/` only).
 
-   - **Upstream-rooted** — root cause is in `profiles/compuclient/...` (vendored parent code) OR in any Compucorp-maintained module/extension outside `sites/all/.../<site>/`. These edits are **ephemeral** — deleted wholesale when the client upgrades its Compuclient profile. Two targets:
+   - **Upstream-rooted** — root cause is in `profiles/compuclient/...` (vendored parent code) OR in any Compucorp-maintained module/extension outside `sites/all/.../<site>/`, OR where the DOM element's interactive behaviour lifecycle is managed by code in `profiles/compuclient/...` even if you are adding rather than modifying code. These edits are **ephemeral** — deleted wholesale when the client upgrades its Compuclient profile. This includes cases where the fix involves **adding new behaviour** (new event handlers, new click-away listeners, new `Drupal.behaviors` wrappers) for DOM elements whose **interactive behaviour** is already defined — however incompletely — by code in `profiles/compuclient/...`. The "root cause" is the upstream code's architectural gap (e.g., a raw `.toggle()` call in `menu.inc` that lacks a corresponding click-away dismissal handler), not the absence of a per-site workaround. If the element is rendered by upstream but has **no upstream interactive behaviour at all**, treat as Uncertain and ask before classifying. Two targets:
      - **Primary (PR target):** the corresponding upstream repo. Mapping examples:
        - `profiles/compuclient/themes/contrib/compu_bs5/` → `compucorp/compu_bs5`
        - `profiles/compuclient/modules/contrib/ssp_core/` → `compucorp/ssp_core`
@@ -407,9 +407,10 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **For client-exclusive bugs (classified at step 3.2):** confirm via `grep -rn`:
    1. The new behavior you're about to add in `./repo-client/sites/all/themes/custom/<site>/` or equivalent does NOT have an equivalent handler in `./repo-client/profiles/compuclient/...` (vendored parent code).
-   2. **If it DOES**: re-classify as upstream-rooted. Restart from step 5 with the dual-clone setup — do NOT implement a per-site duplicate of a vendored upstream handler.
+   1b. The DOM IDs and selectors you plan to bind do NOT appear as the direct target of `.on()`, `.click()`, `.toggle()`, `.show()`, `.hide()`, or similar event/visibility calls — or as the subject of `Drupal.behaviors` attach functions — in `./repo-client/profiles/compuclient/...`. If they do, the fix is upstream-rooted regardless of whether you are adding or modifying behaviour: the upstream code owns the interaction lifecycle for those elements.
+   2. **If either check fires**: re-classify as upstream-rooted. Restart from step 5 with the dual-clone setup — do NOT implement a per-site duplicate or overlay of a vendored upstream handler.
 
-   This confirmation catches the IESBUILD-247-shaped failure mode: agent writes a new per-site JS behavior (`header-clickaway.js`) duplicating an existing upstream handler (`compu_bs5/js/nested-dropdown.js:100-110`) instead of extending the upstream module.
+   This confirmation catches two related failure modes: **(a) the IESBUILD-247 case** — agent writes a per-site click-away handler (`menu-click-away.js`) for popup elements whose toggle is managed by `compu_bs5/includes/menu.inc`, passing check 1 by noting that `nested-dropdown.js` handles main-nav (not popups) — but failing 1b because `#cw-login-menu-popup-container` is a direct `.toggle()` target in `menu.inc`; **(b) the simpler duplication case** — agent writes a per-site handler that replicates an existing upstream handler verbatim.
 
 8. **Implement with `superpowers:test-driven-development`.** Write a failing test that captures the bug. Make it pass with the smallest reasonable change.
 
