@@ -27,15 +27,16 @@ def _bc(cmd, idx=0, desc=""):
     return (idx, desc, cmd)
 
 
+_CREATE_JOB_PATH = analyze_run.JENKINS_DEVSITE_JOB_PATH_SUBSTR
+
+
 class TestDetectJenkinsWrites:
     def test_allowed_path_curl_post(self):
         """A curl -X POST to the carved-out job path counts as allowed."""
         cmds = [
             _bc(
-                'curl -sS -X POST -u "$JENKINS_USER:$JENKINS_TOKEN" '
-                '"$JENKINS_URL/job/Deployments/job/'
-                'Dev%20Sites%20-%20Compucontainer/job/'
-                'Create%20Dev%20Site%20-%20Client%20Specific/buildWithParameters" '
+                f'curl -sS -X POST -u "$JENKINS_USER:$JENKINS_TOKEN" '
+                f'"$JENKINS_URL{_CREATE_JOB_PATH}/buildWithParameters" '
                 '--data-urlencode git_repo=...',
                 idx=100,
             ),
@@ -83,10 +84,8 @@ class TestDetectJenkinsWrites:
         contains `requests.post(...)` + the allowed job path. Still allowed."""
         cmds = [
             _bc(
-                'python3 -c "import requests; requests.post('
-                "'https://jenkins/job/Deployments/job/"
-                "Dev%20Sites%20-%20Compucontainer/job/"
-                "Create%20Dev%20Site%20-%20Client%20Specific/buildWithParameters'"
+                f'python3 -c "import requests; requests.post('
+                f"'https://jenkins{_CREATE_JOB_PATH}/buildWithParameters'"
                 ', data={...})"',
                 idx=200,
             ),
@@ -117,10 +116,8 @@ class TestDetectJenkinsWrites:
         DELETE on the dev-site job path is still disallowed."""
         cmds = [
             _bc(
-                'curl -X DELETE -u $JENKINS_USER:$JENKINS_TOKEN '
-                '"$JENKINS_URL/job/Deployments/job/'
-                'Dev%20Sites%20-%20Compucontainer/job/'
-                'Create%20Dev%20Site%20-%20Client%20Specific/123/"',
+                f'curl -X DELETE -u $JENKINS_USER:$JENKINS_TOKEN '
+                f'"$JENKINS_URL{_CREATE_JOB_PATH}/123/"',
                 idx=500,
             ),
         ]
@@ -153,10 +150,8 @@ class TestDetectJenkinsWrites:
         """
         cmds = [
             _bc(
-                'curl -X POST -u $JENKINS_USER:$JENKINS_TOKEN '
-                '"$JENKINS_URL/job/Deployments/job/'
-                'Dev%20Sites%20-%20Compucontainer/job/'
-                'Create%20Dev%20Site%20-%20Client%20Specific/disable"',
+                f'curl -X POST -u $JENKINS_USER:$JENKINS_TOKEN '
+                f'"$JENKINS_URL{_CREATE_JOB_PATH}/disable"',
                 idx=10,
             ),
         ]
@@ -174,10 +169,8 @@ class TestExtractDevsiteTriggerRepo:
         cmd = (
             'curl -X POST -u $JENKINS_USER:$JENKINS_TOKEN '
             '--data-urlencode "git_repo=git@github.com:compucorp/ies.git" '
-            '--data-urlencode "git_tag=agent/IES-123-fix" '
-            '"$JENKINS_URL/job/Deployments/job/'
-            'Dev%20Sites%20-%20Compucontainer/job/'
-            'Create%20Dev%20Site%20-%20Client%20Specific/buildWithParameters"'
+            f'--data-urlencode "git_tag=agent/IES-123-fix" '
+            f'"$JENKINS_URL{_CREATE_JOB_PATH}/buildWithParameters"'
         )
         assert analyze_run.extract_devsite_trigger_repo(cmd) == "ies"
 
@@ -256,10 +249,8 @@ class TestBypassesAndEdgeCases:
         cmds = [_bc(
             'curl -X POST -u $JENKINS_USER:$JENKINS_TOKEN '
             '--data-urlencode "git_repo=git@github.com:compucorp/terraform.git" '
-            '--data-urlencode "git_tag=agent/X-1-fix" '
-            '"$JENKINS_URL/job/Deployments/job/'
-            'Dev%20Sites%20-%20Compucontainer/job/'
-            'Create%20Dev%20Site%20-%20Client%20Specific/buildWithParameters"',
+            f'--data-urlencode "git_tag=agent/X-1-fix" '
+            f'"$JENKINS_URL{_CREATE_JOB_PATH}/buildWithParameters"',
             idx=4,
         )]
         result = analyze_run.detect_jenkins_writes(cmds)
@@ -284,10 +275,8 @@ class TestBypassesAndEdgeCases:
         urlencoded body or a sloppy invocation might omit it."""
         cmd = (
             'curl -X POST --data-urlencode '
-            '"git_repo=git@github.com:compucorp/ies&git_tag=foo" '
-            '"$JENKINS_URL/job/Deployments/job/'
-            'Dev%20Sites%20-%20Compucontainer/job/'
-            'Create%20Dev%20Site%20-%20Client%20Specific/buildWithParameters"'
+            f'"git_repo=git@github.com:compucorp/ies&git_tag=foo" '
+            f'"$JENKINS_URL{_CREATE_JOB_PATH}/buildWithParameters"'
         )
         assert analyze_run.extract_devsite_trigger_repo(cmd) == "ies"
 

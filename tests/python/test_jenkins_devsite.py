@@ -125,9 +125,7 @@ class TestTriggerDevSite:
 
         assert queue_url == "https://jenkins.test.local/queue/item/42/"
         assert captured["url"] == (
-            "https://jenkins.test.local/job/Deployments/job/"
-            "Dev%20Sites%20-%20Compucontainer/job/"
-            "Create%20Dev%20Site%20-%20Client%20Specific/buildWithParameters"
+            f"https://jenkins.test.local{rh._DEVSITE_JOB_PATH}/buildWithParameters"
         )
         assert captured["auth"] == ("openclawautomation", "fake_jenkins_token")
         assert captured["data"]["git_repo"] == "git@github.com:compucorp/ies.git"

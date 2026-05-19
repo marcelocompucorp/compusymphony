@@ -104,9 +104,11 @@ TRIAGE_FIRST_ALLOWED_LATER = (
 # it sees both `curl -X POST` and Python `requests.post(...)` /
 # `trigger_dev_site(` / `trigger_release_devsite(` invocations from
 # `repro_helpers`.
+# TEMPORARY: pointing at the Groovy-pipeline test job until the migration is
+# promoted to production. Flip back to the Deployments/… path when promoted.
 JENKINS_DEVSITE_JOB_PATH_SUBSTR = (
-    "/job/Deployments/job/Dev%20Sites%20-%20Compucontainer"
-    "/job/Create%20Dev%20Site%20-%20Client%20Specific"
+    "/job/Test_Jobs"
+    "/job/Create%20Dev%20Site%20-%20Client%20Specific%20-%20Pipeline%20Test"
 )
 # Phase B: Release Dev Site (fix branch released to existing dev site).
 JENKINS_RELEASE_JOB_PATH_SUBSTR = (
