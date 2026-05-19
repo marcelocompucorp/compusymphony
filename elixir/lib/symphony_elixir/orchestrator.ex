@@ -236,13 +236,15 @@ defmodule SymphonyElixir.Orchestrator do
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues() do
       sorted = sort_issues_for_dispatch(issues)
-      state = %{state | pending: compute_pending(sorted, state)}
 
-      if available_slots(state) > 0 do
-        choose_issues(sorted, state)
-      else
-        state
-      end
+      final_state =
+        if available_slots(state) > 0 do
+          choose_issues(sorted, state)
+        else
+          state
+        end
+
+      %{final_state | pending: compute_pending(sorted, final_state)}
     else
       {:error, reason} when is_binary(reason) ->
         Logger.error(reason)
