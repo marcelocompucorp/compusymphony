@@ -593,7 +593,8 @@ RECORD_VIDEO = True  # ← agent sets this per §10.1 gate
 # --- Video recording variant of §9b Phase B main() ---
 
 pathlib.Path("after.png").unlink(missing_ok=True)
-pathlib.Path("after.mp4").unlink(missing_ok=True)
+pathlib.Path("after.gif").unlink(missing_ok=True)
+pathlib.Path("before.gif").unlink(missing_ok=True)
 # Clean up any leftover .webm from prior runs:
 if VIDEOS_DIR.exists():
     for f in VIDEOS_DIR.glob("*.webm"):
@@ -643,26 +644,27 @@ with sync_playwright() as p:
 
 **Scope note:** video covers only the first `reproduce_after_state → assert_bug_fixed → screenshot` block. The logged-in regression check runs in a separate, non-recording context. This keeps the video focused on the interaction evidence and avoids 30+ second recordings that include login flows.
 
-### 10.3 Convert .webm → .mp4
+### 10.3 Convert .webm → .gif
+
+GitHub embeds external GIFs inline (proxied via `camo.githubusercontent.com`) but blocks external `<video>` sources via CSP. GIF is therefore the correct output format for PR embedding from a server environment with only a PAT — no browser session required.
 
 ```python
 # Gate: only convert if ffmpeg is available
 if shutil.which("ffmpeg") is None:
-    print("ffmpeg not found — keeping after.webm, skipping mp4 conversion.")
+    print("ffmpeg not found — keeping after.webm, skipping gif conversion.")
 else:
+    # Two-pass palette GIF: much better colour quality than single-pass
     result = subprocess.run(
         [
-            "ffmpeg", "-y",
-            "-i", "after.webm",
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            "-movflags", "+faststart",   # moov atom at front for streaming
-            "after.mp4",
+            "ffmpeg", "-y", "-i", "after.webm",
+            "-vf", "fps=8,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+            "-loop", "0",
+            "after.gif",
         ],
         capture_output=True,
     )
     if result.returncode != 0:
-        print(f"ffmpeg conversion failed:\n{result.stderr.decode()}")
+        print(f"ffmpeg gif conversion failed:\n{result.stderr.decode()}")
         # after.webm is still available as fallback
     else:
         pathlib.Path("after.webm").unlink(missing_ok=True)  # clean up source
@@ -670,69 +672,50 @@ else:
 
 `-movflags +faststart` allows streaming before full download. `-y` overwrites existing output. `-c:a aac` is safe even if the source has no audio track (Playwright records silent video).
 
-### 10.4 Artifact policy (workspace-only)
+### 10.4 Artifact policy (workspace-only for source files)
 
-Same policy as §7 screenshots — videos are NOT committed to any git repo:
-- `videos/` and `after.mp4` land in `<workspace>/` only
-- NOT included in the `.agent-artifacts/<TICKET>/` artifact commit (the `git add .agent-artifacts/<TICKET>/` step in §7 must not pick up `videos/` or `*.mp4` — these are not inside `.agent-artifacts/`, so the scoped `git add` naturally excludes them)
-- NOT embedded in the PR body (no public hosting configured yet)
+- `videos/` and `after.webm`/`after.mp4` land in `<workspace>/` only — NOT committed to any git repo
+- `after.gif` is uploaded to S3 and embedded in the PR body (see §10.5)
+- The scoped `git add .agent-artifacts/<TICKET>/` in §7 naturally excludes `videos/`, `*.webm`, `*.mp4`, `*.gif` since they are not inside `.agent-artifacts/`
 
-The `after.png` screenshot is still the primary visual artifact embedded in the PR.
+### 10.5 S3 upload and PR embedding
 
-### 10.5 PR body when video was recorded
-
-```markdown
-## After
-
-![After — <one-line fix description>](https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/after.png)
-
-A screen recording was also captured (`after.mp4`, workspace-only) but is not embedded — video hosting not yet configured. To view: retrieve from the Symphony workspace transcript.
-
-Steps to manually verify the interactive behaviour:
-1. <action that triggered the bug, e.g. "Open the member nav popup, then click anywhere outside it.">
-2. Confirm: <expected post-fix outcome, e.g. "The popup closes immediately.">
-```
-
-### 10.6 S3 upload and PR embedding
-
-Upload `after.mp4` to the artifacts bucket and embed in the PR body. Credentials are in env vars injected at runtime:
+Upload `after.gif` (and optionally `before.gif`) to the artifacts bucket. GIF is the correct format — GitHub proxies external GIFs inline via `camo.githubusercontent.com` and they render as autoplaying animations in PR descriptions. External `<video>` tags from S3 are blocked by GitHub's CSP; GIF is the server-compatible alternative.
 
 ```python
 import subprocess, os
 
-bucket = os.environ["SYMPHONY_ARTIFACTS_BUCKET"]       # compuco-agents-artifacts-916270379481-eu-west-2-an
-region = os.environ["SYMPHONY_ARTIFACTS_REGION"]       # eu-west-2
+bucket = os.environ["SYMPHONY_ARTIFACTS_BUCKET"]   # compuco-agents-artifacts-916270379481-eu-west-2-an
+region = os.environ["SYMPHONY_ARTIFACTS_REGION"]   # eu-west-2
 key_id = os.environ["SYMPHONY_ARTIFACTS_KEY_ID"]
 secret = os.environ["SYMPHONY_ARTIFACTS_SECRET"]
 
-s3_key = f"{TICKET}/after.mp4"
-public_url = f"https://{bucket}.s3.{region}.amazonaws.com/{s3_key}"
-
-result = subprocess.run(
-    [
-        "aws", "s3", "cp", "after.mp4",
-        f"s3://{bucket}/{s3_key}",
-        "--region", region,
-        "--content-type", "video/mp4",
-    ],
-    env={**os.environ, "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret},
-    capture_output=True,
-)
-if result.returncode != 0:
-    print(f"S3 upload failed: {result.stderr.decode()}")
-    # Fall back to workspace-only + manual verification note in PR body
-else:
-    print(f"Video uploaded: {public_url}")
+for fname, s3_key in [("before.gif", f"{TICKET}/before.gif"), ("after.gif", f"{TICKET}/after.gif")]:
+    if not pathlib.Path(fname).exists():
+        continue
+    public_url = f"https://{bucket}.s3.{region}.amazonaws.com/{s3_key}"
+    result = subprocess.run(
+        ["aws", "s3", "cp", fname, f"s3://{bucket}/{s3_key}",
+         "--region", region, "--content-type", "image/gif"],
+        env={**os.environ, "AWS_ACCESS_KEY_ID": key_id, "AWS_SECRET_ACCESS_KEY": secret},
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        print(f"S3 upload failed for {fname}: {result.stderr.decode()}")
+    else:
+        print(f"Uploaded: {public_url}")
 ```
 
-PR `## After` section when upload succeeds:
+PR `## Before` / `## After` sections:
 
 ```markdown
+## Before
+
+![Before — <one-line bug description>](https://compuco-agents-artifacts-916270379481-eu-west-2-an.s3.eu-west-2.amazonaws.com/<TICKET>/before.gif)
+
 ## After
 
-![After — <one-line fix description>](https://github.com/<owner>/<repo>/raw/agent/<TICKET>-fix/.agent-artifacts/<TICKET>/after.png)
-
-<video src="https://compuco-agents-artifacts-916270379481-eu-west-2-an.s3.eu-west-2.amazonaws.com/<TICKET>/after.mp4" controls width="800"></video>
+![After — <one-line fix description>](https://compuco-agents-artifacts-916270379481-eu-west-2-an.s3.eu-west-2.amazonaws.com/<TICKET>/after.gif)
 ```
 
-GitHub renders `<video>` tags in PR descriptions. The URL is permanent (public-read bucket policy, no expiry).
+The S3 URLs are permanent (public-read bucket policy, no expiry). GitHub proxies them through `camo.githubusercontent.com` — they render inline without any CSP issues.
