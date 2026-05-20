@@ -106,7 +106,7 @@ These override defaults; treat them as hard rules.
    - `compucorp/civicrm-core` — **⚠️ fork of `civicrm/civicrm-core`**. Run routine step 3a's `compuclient.make.yml` check before assuming Compucorp is the source.
    - `compucorp/uk.co.vedaconsulting.mosaico` — **⚠️ fork**. Same caveat: run step 3a.
    - `compucorp/webform_civicrm` — **⚠️ fork**. Same caveat: run step 3a.
-   - `compucorp/nes-mirror` — **⚠️ mirror (name says so)**. Do NOT open PRs here without confirming upstream.
+   - `compucorp/nes-mirror` — **⚠️ mirror (name says so)**. Do NOT open PRs here without confirming the mirror's source (run step 3a).
 
    **Default branch for unannotated entries below:** discover at runtime via `gh api repos/<owner>/<repo> --jq .default_branch`. Do not assume `master`/`main`. (Repeated on each section heading below for agents that jump straight to a section.)
 
