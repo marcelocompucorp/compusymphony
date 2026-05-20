@@ -796,7 +796,7 @@ def section(title):
 
 
 AGENT_DONE_PREFIXES = (
-    "success", "success-dual", "success-upstream-only",
+    "success", "success-dual", "success-core-only",
     "dry-run",
     "blocked-review", "blocked-verify", "blocked",
 )

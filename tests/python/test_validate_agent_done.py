@@ -1,7 +1,7 @@
 """Tests for analyze-run.py:validate_agent_done (v1.12 schema coverage).
 
 Covers all valid AGENT_DONE prefixes introduced in v1.11/v1.12:
-  success, success-dual, success-upstream-only, dry-run,
+  success, success-dual, success-core-only, dry-run,
   blocked-review, blocked-verify, blocked
 
 And all malformed-input failure paths:
@@ -56,7 +56,7 @@ def _write_done(tmp_dir, content):
 VALID_PREFIXES = [
     "success",
     "success-dual",
-    "success-upstream-only",
+    "success-core-only",
     "dry-run",
     "blocked-review",
     "blocked-verify",

@@ -30,8 +30,8 @@ inputs explicitly listed below.
 2. **Plan** — contents of `<workspace>/plan.md` (the bite-sized plan written
    by the `superpowers:writing-plans` skill before implementation).
 3. **Diff** — full output of `git diff <default-branch>..HEAD` from inside
-   `<workspace>/repo-client` (single-target) or `<workspace>/repo-upstream`
-   (dual-target upstream PR). Read the file headers carefully: changes to
+   `<workspace>/repo-client` (single-target) or `<workspace>/repo-core`
+   (dual-target core PR). Read the file headers carefully: changes to
    `.tpl`, `.module`, `info.xml`, `*.install` files have different review
    semantics than pure PHP changes.
 4. **Workspace path** — so you can use `Read`/`Grep`/`Glob` to inspect files
@@ -43,14 +43,14 @@ inputs explicitly listed below.
    each prior finding by id and report its current status in your output's
    `prior_findings_addressed` field (see "Output schema" below).
 6. **`workspace_layout`** (v1.12+, optional) — `"single"` or `"dual"`. `"dual"` means
-   the run is upstream-rooted: the diff is against `<workspace>/repo-upstream`
+   the run is core-rooted: the diff is against `<workspace>/repo-core`
    and a `qa-<TICKET>` branch was pushed to the client repo. Absent = `"single"`.
-7. **`target_repo_type`** (v1.12+, optional) — `"upstream"` or `"client"`. `"upstream"`
+7. **`target_repo_type`** (v1.12+, optional) — `"core"` or `"client"`. `"core"`
    means the PR is against a Compucorp shared repo (`compu_bs5`, `ssp_core`,
    `core-website`, `compuclient`, etc.). Absent = `"client"`.
 8. **`propagation_status`** (v1.12+, optional) — `"byte-identical"`, `"context-resolved"`,
    or `"skipped"`. Describes the result of `git apply --check` / `--3way` when
-   propagating the upstream patch to the client's vendored copy. Absent = N/A (single-target).
+   propagating the core patch to the client's vendored copy. Absent = N/A (single-target).
 
 ## What you must check (in this priority order)
 
@@ -130,7 +130,7 @@ For Drupal 7 + CiviCRM code specifically:
   called for AJAX-loaded content (the guard fires only once globally, not once
   per context). Exception: when `context` is always `document` by design and
   the handler is document-level — document the reasoning.
-- **Coordinator behavior (BLOCKER):** A coordinator is any new `Drupal.behaviors.*` implementation (or document-level jQuery handler) whose primary effect is to close, hide, show, or otherwise manage DOM elements whose interactive lifecycle (open/close/toggle) is owned by **another** component — e.g., a behavior that calls `.hide()` or `.toggle()` on popup elements that `compu_bs5/includes/menu.inc` opens. Coordinators are a **BLOCKER** regardless of classification. **Carve-out (not a coordinator):** a behavior that creates AND manages its own DOM elements is fine — e.g., a tooltip behavior that creates the tooltip node, attaches its own listeners, and hides it on outside-click is owning its full lifecycle, not coordinating someone else's. The diagnostic question is "who created and initially bound the element being managed?", not "does the behavior call `.hide()`?". State in the finding: (a) which selector/element the coordinator manages, (b) which file actually owns (creates + binds) that element's lifecycle, (c) what the correct fix is (fix the owner directly; if the owner is in `profiles/compuclient/...`, the bug should have been classified upstream-rooted — cross-reference §5a). The canonical failure is IESBUILD-247 PR #229: `menu-click-away.js` coordinating popup elements owned by `compu_bs5/includes/menu.inc`.
+- **Coordinator behavior (BLOCKER):** A coordinator is any new `Drupal.behaviors.*` implementation (or document-level jQuery handler) whose primary effect is to close, hide, show, or otherwise manage DOM elements whose interactive lifecycle (open/close/toggle) is owned by **another** component — e.g., a behavior that calls `.hide()` or `.toggle()` on popup elements that `compu_bs5/includes/menu.inc` opens. Coordinators are a **BLOCKER** regardless of classification. **Carve-out (not a coordinator):** a behavior that creates AND manages its own DOM elements is fine — e.g., a tooltip behavior that creates the tooltip node, attaches its own listeners, and hides it on outside-click is owning its full lifecycle, not coordinating someone else's. The diagnostic question is "who created and initially bound the element being managed?", not "does the behavior call `.hide()`?". State in the finding: (a) which selector/element the coordinator manages, (b) which file actually owns (creates + binds) that element's lifecycle, (c) what the correct fix is (fix the owner directly; if the owner is in `profiles/compuclient/...`, the bug should have been classified core-rooted — cross-reference §5a). The canonical failure is IESBUILD-247 PR #229: `menu-click-away.js` coordinating popup elements owned by `compu_bs5/includes/menu.inc`.
 
 ### 5. Code standards (Compucorp shared-development-guide.md)
 
@@ -166,10 +166,10 @@ Check whether the repo has a linter config and whether there is evidence the age
 - **SUGGESTION** if a linter config exists but the diff looks clean — agent probably ran it but didn't document it.
 - **Pass** if linter config exists and diff is clean with no lint-smell indicators, OR if no linter config exists in the repo.
 
-### 5a. Upstream-first workflow (v1.12+)
+### 5a. Core-first workflow (v1.12+)
 
 This section applies when reviewing a PR against a **CLIENT** repo (e.g., `compucorp/ies`,
-`compucorp/mm`, `compucorp/cst`). When `target_repo_type == "upstream"`, skip to section
+`compucorp/mm`, `compucorp/cst`). When `target_repo_type == "core"`, skip to section
 7 (dual-target completeness) below instead.
 
 When the diff adds new behavior to a client repo (new JS file, new `Drupal.behaviors.*`,
@@ -189,30 +189,30 @@ correct repo was targeted:
         as the new client-repo behavior, AND
      b. The selector has NO client-specific qualifier (no `cw-` prefix scoped to this
         site, no per-site container ID, no per-site data attribute), AND
-     c. The new behavior's intent overlaps with the upstream handler's intent (e.g.,
+     c. The new behavior's intent overlaps with the core handler's intent (e.g.,
         both are "close on outside click" — not "vendored binds `.dropdown` for menu
         toggle; client binds for analytics").
 
      In this case the agent misclassified at step 3.2 — this should have been an
-     upstream-rooted run with dual targets. State which upstream repo should have been
+     core-rooted run with dual targets. State which core repo should have been
      the primary PR target (e.g., `compucorp/compu_bs5` for `profiles/compuclient/themes/contrib/compu_bs5/`).
 
    - **BLOCKER** when the diff edits files inside `profiles/compuclient/...` in the
      client repo directly (e.g., `profiles/compuclient/modules/contrib/core-website/...`).
      These edits are **ephemeral** — they are deleted wholesale when the client upgrades
-     its Compuclient profile. The fix must live in the upstream repo. State which upstream
+     its Compuclient profile. The fix must live in the core repo. State which core
      repo (`compucorp/<name>`) should own this change.
 
    - **WARNING** when overlap exists but ambiguity remains (e.g., the selector is a
      generic Bootstrap class that vendored code binds for a different purpose). Suggest
-     the upstream alternative; accept the per-site PR if `## Technical Details`
+     the core alternative; accept the per-site PR if `## Technical Details`
      documents the client-specific scope.
 
    - **Pass** when no overlap (client-specific selectors, IDs, data-attributes with no
      vendored equivalent, or fix is in `sites/all/themes/custom/<site>/` or
      `sites/all/modules/{custom,features}/<site>/` with genuinely per-site scope).
 
-4. For PRs in upstream repos (`compu_bs5`, `ssp_core`, `core-website`, `compuclient`):
+4. For PRs in core repos (`compu_bs5`, `ssp_core`, `core-website`, `compuclient`):
    this section produces no finding — those PRs are correctly targeted by construction.
    Proceed to section 7 (dual-target completeness) to verify the client QA branch was also pushed.
 
@@ -349,10 +349,10 @@ Note: compiled-CSS paths covered are `dist/`, `build/`, `css/`, and `public/css/
 - **Unacceptable rationales (stay BLOCKER)**: "CI will rebuild" (verify the workflow file before accepting); "local build produced minified output incompatible with committed format" — this is the established hand-append pattern (see IES-596, IESBUILD-260 PR #228 for prior art); document the hand-append in PR `## Comments` rather than claiming exemption. The agent must commit a corresponding `dist/css/style.css` change in some form; the only question is whether it's npm-output or hand-appended.
 - **Critique the rationale per invariant 5's skip-rationale rules** — same anti-rubber-stamp posture applies.
 
-## 7. Dual-target completeness (upstream PRs only, v1.12+)
+## 7. Dual-target completeness (core PRs only, v1.12+)
 
-This section applies ONLY when `target_repo_type == "upstream"` (the PR is against a
-Compucorp shared upstream repo: `compu_bs5`, `ssp_core`, `core-website`, `compuclient`,
+This section applies ONLY when `target_repo_type == "core"` (the PR is against a
+Compucorp shared core repo: `compu_bs5`, `ssp_core`, `core-website`, `compuclient`,
 or any other `compucorp/<name>` shared module).
 
 For client-originated tickets (e.g., `IESBUILD-*`, `MMMM-*`, `COMCL-*`), verify that
@@ -371,20 +371,20 @@ Detection — check ONE of these signals (in order of reliability):
 **Verdict by case:**
 
 - **Pass** — QA branch push detected AND `propagation_status` is `byte-identical`.
-  The fix is reviewed upstream AND the QA team has a working client-context branch.
+  The fix is reviewed in the core repo AND the QA team has a working client-context branch.
 
 - **WARNING** — QA branch push detected AND `propagation_status` is `context-resolved`.
   The propagation required 3-way merge context resolution, so the vendored copy differs
-  slightly from the upstream patch. The QA team can test it, but an operator should
-  manually diff the vendored vs upstream patch to confirm no logic drift before
-  approving the upstream PR merge.
+  slightly from the core patch. The QA team can test it, but an operator should
+  manually diff the vendored vs core patch to confirm no logic drift before
+  approving the core PR merge.
 
-- **WARNING** — No QA branch push detected AND `AGENT_DONE != "success-upstream-only"`.
-  The upstream PR is open but QA team has nothing to test in client context. This may
+- **WARNING** — No QA branch push detected AND `AGENT_DONE != "success-core-only"`.
+  The core PR is open but QA team has nothing to test in client context. This may
   indicate the propagation step was skipped inadvertently. The operator should manually
   create `qa-<TICKET>` from the client's current deployed tag.
 
-- **Pass** — `AGENT_DONE == "success-upstream-only"` (or `propagation_status == "skipped"`).
+- **Pass** — `AGENT_DONE == "success-core-only"` (or `propagation_status == "skipped"`).
   The Jira comment should explain why the client QA branch was omitted (3-way merge
   conflict or explicit skip). Operator action is documented. No finding needed from
   the reviewer.

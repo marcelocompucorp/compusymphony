@@ -247,7 +247,7 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 - **Label handling depends on outcome:**
   - **Dry-run SUCCESS** (reviewer approved at any round): remove BOTH `agent:todo` AND `agent:dry-run` labels via the Atlassian MCP. **This is the only Jira mutation permitted in dry-run mode**, and exists to prevent the post-completion retry storm.
   - **Dry-run BLOCKED** (reviewer rejected at N=3, or any other blocker per step 12b / the Blockers section): leave BOTH labels ON for human triage. The block reason goes into `<workspace>/dry-run-summary.md` ONLY — NOT into a Jira comment. If the operator wants to share the block reason on Jira, they post it manually after reviewing the workspace.
-- Leave the local branch + commits in the workspace `./repo-client/` (and `./repo-upstream/` if dual-target) for human inspection.
+- Leave the local branch + commits in the workspace `./repo-client/` (and `./repo-core/` if dual-target) for human inspection.
 - At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>..HEAD`), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
   - (f) Visual-repro outcome — one of:
     - `committed-repro` (script ran, assertion fired, before.png at <workspace>/before.png)
@@ -285,33 +285,47 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 3. **Pick the target repo(s) from the allowlist** based on the bug's ROOT CAUSE location.
 
-   **Step 3.1 — preliminary classification from the ticket alone.** Use the ticket's project prefix as the FIRST hint (`IESBUILD-*` → `ies`, `MMMM-*` → `mm`, etc.). This identifies the originating **client repo**. It does NOT yet determine whether the fix lives in the client or upstream.
+   **Authoritative references (Compucorp Confluence):**
+   - [Compuclient folder structure (modules)](https://compucorp.atlassian.net/wiki/spaces/SD/pages/1519091822/)
+   - [Compuclient folder structure (themes & general)](https://compucorp.atlassian.net/wiki/spaces/SD/pages/84344881/)
+
+   The mapping table in step 3.2 below is derived from these pages. If a path doesn't fit any row, consult the wiki and post a Jira comment if the answer remains ambiguous.
+
+   **Step 3.1 — preliminary classification from the ticket alone.** Use the ticket's project prefix as the FIRST hint (`IESBUILD-*` → `ies`, `MMMM-*` → `mm`, etc.). This identifies the originating **client repo**. It does NOT yet determine whether the fix lives in the client or in the core repo.
 
    **Step 3.2 — refine after preliminary investigation (steps 4–6).** Once you've cloned the client repo and looked at the symptom, classify the bug:
 
    - **Client-exclusive** — root cause is in `sites/all/themes/custom/<site>/`, `sites/all/modules/{custom,features}/<site>/`, or another path that does NOT exist in other clients. Target: ONLY the client repo. Proceed with the standard single-repo flow (steps 5 onwards use `./repo-client/` only).
 
-   - **Upstream-rooted** — root cause is in `profiles/compuclient/...` (vendored parent code) OR in any Compucorp-maintained module/extension outside `sites/all/.../<site>/`, OR where the DOM element's interactive behaviour lifecycle is managed by code in `profiles/compuclient/...` even if you are adding rather than modifying code. These edits are **ephemeral** — deleted wholesale when the client upgrades its Compuclient profile. This includes cases where the fix involves **adding new behaviour** (new event handlers, new click-away listeners, new `Drupal.behaviors` wrappers) for DOM elements whose **interactive behaviour** is already defined — however incompletely — by code in `profiles/compuclient/...`. The "root cause" is the upstream code's architectural gap (e.g., a raw `.toggle()` call in `menu.inc` that lacks a corresponding click-away dismissal handler), not the absence of a per-site workaround. If the element is rendered by upstream but has **no upstream interactive behaviour at all**, treat as Uncertain and ask before classifying. Two targets:
-     - **Primary (PR target):** the corresponding upstream repo. Mapping examples:
-       - `profiles/compuclient/themes/contrib/compu_bs5/` → `compucorp/compu_bs5`
-       - `profiles/compuclient/modules/contrib/ssp_core/` → `compucorp/ssp_core`
-       - `profiles/compuclient/modules/contrib/core_website/` → `compucorp/core-website` (**note**: Drupal module directories use underscores `core_website`; the GitHub repo uses a hyphen `core-website` — same module, different separator conventions)
-       - `profiles/compuclient/modules/contrib/<any-maintained-ext>/` → `compucorp/<any-maintained-ext>` if on the allowlist
-       - `profiles/compuclient/` (profile-level) → `compucorp/compuclient`
-       - Any shared CiviCRM extension or contrib module Compucorp maintains → `compucorp/<name>` if on the allowlist; otherwise check `compuco_projects.yml` (see below) before blocking.
-       - Other `profiles/compuclient/modules/contrib/<name>/` NOT on the static allowlist → **check `compuco_projects.yml` in `compucorp/compuclient` before blocking:**
-         ```bash
-         gh api "repos/compucorp/compuclient/contents/compuco_projects.yml" \
-           --jq '.content' | base64 -d | grep -i "<name>"
-         ```
-         If found → proceed with the upstream PR to `compucorp/<name>`. If not found → STOP and ask.
+   - **Core-rooted** — root cause (or DOM-element lifecycle owner) is under `profiles/compuclient/...`, OR in any Compucorp-maintained module/extension that ships into multiple clients. Direct edits to `profiles/compuclient/...` inside a client repo are **ephemeral** (overwritten on the next Compuclient profile upgrade), so they must NOT be the fix. Two targets are required:
+     - **Primary (PR target):** the corresponding core repo. Decide by root-cause path location, not by symptom:
+
+       | Path | Target repo |
+       |---|---|
+       | `sites/all/...` | **Client-exclusive** — fix in the client repo only (no core PR) |
+       | `profiles/compuclient/modules/contrib/<name>/` | Core repo `compucorp/<name>` |
+       | `profiles/compuclient/themes/contrib/<name>/` | Core repo `compucorp/<name>` |
+       | Anywhere else under `profiles/compuclient/...` | Core repo `compucorp/compuclient` |
+
+       **Drupal-name-to-repo-name caveat:** module directory names may use underscores (`core_website`) while the GitHub repo uses a hyphen (`core-website`). The find-by-file approach in step 11's `git apply --directory` derivation handles this without a translation table.
+
+       **Lifecycle exception (universal — applies even when ADDING new behaviour):** even if you are not modifying an existing file in `profiles/compuclient/...`, the fix is **core-rooted** whenever the DOM element's interactive behaviour lifecycle (markup, `Drupal.behaviors`, `form_alter`, preprocess, `hook_node_view`, popup toggle in a template `.inc`, etc.) is owned by code under `profiles/compuclient/...`. Writing a new per-site behaviour to patch around a broken core lifecycle is the IESBUILD-247 anti-pattern. Cross-reference: step 7a "Coordinator behavior gate".
+
+       **No-behaviour escape clause:** if the element is rendered by core (markup lives in `profiles/compuclient/...`) but has **no core interactive behaviour at all** (no `Drupal.behaviors`, no inline JS in the template, no event binding anywhere under `profiles/compuclient/...`), treat as **Uncertain** and ask via Jira comment before classifying. Prevents over-classifying purely static markup as core-rooted when a per-site enhancement is genuinely the right scope.
+
+       **Unknown module fallback (`compuco_projects.yml`):** if a path matches row 2 or 3 but the module name is not on the static allowlist:
+       ```bash
+       gh api "repos/compucorp/compuclient/contents/compuco_projects.yml" \
+         --jq '.content' | base64 -d | grep -i "<name>"
+       ```
+       If found → proceed with the core PR to `compucorp/<name>`. If not found → STOP and ask. Closes the gap between the ~28-repo static allowlist and the ~54-repo authoritative list.
      - **Secondary (QA-branch target):** the originating client repo (from step 3.1). Branch name `qa-<ticket-key>` (e.g., `qa-IESBUILD-247`). NO PR is opened on the secondary; only a branch push for QA-team testing.
 
-   - **Uncertain** — root cause is not clearly client-exclusive or upstream-rooted after investigation. **STOP. Do NOT guess.** Post a Jira comment explaining what you found, why the classification is ambiguous, and what additional information would resolve it. Set `AGENT_DONE = blocked <timestamp> <TICKET>`. A misclassification that opens a PR in the wrong repo is harder to undo than a stopped run.
+   - **Uncertain** — root cause is not clearly client-exclusive or core-rooted after investigation. **STOP. Do NOT guess.** Post a Jira comment explaining what you found, why the classification is ambiguous, and what additional information would resolve it. Set `AGENT_DONE = blocked <timestamp> <TICKET>`. A misclassification that opens a PR in the wrong repo is harder to undo than a stopped run.
 
    Use `gh api "repos/<owner>/<repo>" --jq .default_branch` at runtime to confirm the default branch for each target repo.
 
-3a. **Verify the repo is the active upstream, not a read-only mirror (mandatory).** Some Compucorp repos under `compucorp/*` started as forks (when Compucorp carried local patches) and reverted to mirrors after the patches were merged upstream. Pushing to a mirror is wasted work — production won't see the change.
+3a. **Verify the repo is the active core repo, not a read-only mirror (mandatory).** Some Compucorp repos under `compucorp/*` started as forks (when Compucorp carried local patches) and reverted to mirrors after the patches were merged upstream. Pushing to a mirror is wasted work — production won't see the change.
 
    Check, in order:
 
@@ -334,7 +348,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    (c) **If the repo IS a mirror:** do NOT open a PR there. Stop, comment on Jira with:
    - Quote of the relevant `compuclient.make.yml` entry showing the real source
-   - Statement: "The fix needs to go upstream to `<real URL>`. Opening a merge request there is out of scope for this agent in Phase 1 (no credentials on that platform). Could a human with upstream access take this?"
+   - Statement: "The fix needs to be made in the core repo at `<real URL>`. Opening a merge request there is out of scope for this agent in Phase 1 (no credentials on that platform). Could a human with write access to that repo take this?"
    - Attach the diff: leave the local branch in the workspace, mention its location, or push it to the mirror as a feature branch (NOT as a PR) so the diff is referenceable.
    - Remove the `agent:todo` label.
 
@@ -378,22 +392,22 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 5. **Clone the target repo(s).**
 
-   - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Create a convenience symlink: `ln -sfn ./repo-client ./repo-upstream` so that step references to `./repo-upstream/` resolve to the same clone. The run is single-target when `realpath ./repo-upstream` == `realpath ./repo-client`.
+   - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Create a convenience symlink: `ln -sfn ./repo-client ./repo-core` so that step references to `./repo-core/` resolve to the same clone. The run is single-target when `realpath ./repo-core` == `realpath ./repo-client`.
 
-   - **Upstream-rooted bugs (dual-target):** clone BOTH and track two base commits:
-     - `./repo-upstream/` ← `compucorp/<upstream-repo>` (the PR target). Base commit is called **`BASE_COMMIT_UPSTREAM`** — the upstream's default branch tip, OR active RC branch if one exists (see RC detection below).
+   - **Core-rooted bugs (dual-target):** clone BOTH and track two base commits:
+     - `./repo-core/` ← `compucorp/<core-repo>` (the PR target). Base commit is called **`BASE_COMMIT_CORE`** — the core repo's default branch tip, OR active RC branch if one exists (see RC detection below).
      - `./repo-client/` ← `compucorp/<client-repo>` (the QA-branch target). Base commit is called **`BASE_COMMIT_CLIENT`** — the client's deployed tag resolved by step 3b Mongo lookup, same as for single-target runs.
 
-     Step 3b's Mongo lookup applies to `./repo-client/` only. It does NOT apply to `./repo-upstream/` (the upstream repo isn't deployed as a standalone site).
+     Step 3b's Mongo lookup applies to `./repo-client/` only. It does NOT apply to `./repo-core/` (the core repo isn't deployed as a standalone site).
 
-     **RC branch detection (upstream repos):**
+     **RC branch detection (core repos):**
      ```bash
-     gh api "repos/<upstream>/branches" --jq '.[].name' | grep -E \
+     gh api "repos/<core>/branches" --jq '.[].name' | grep -E \
        '^7\.x-[0-9]+\.[0-9]+(\.[0-9]+|-(patch|alpha|beta)[.0-9]+)*-rc$'
      ```
-     Expect 0 or 1 match. If 0 → `BASE_COMMIT_UPSTREAM` = default branch tip. If 1 → `BASE_COMMIT_UPSTREAM` = RC branch tip. If ≥2 → log WARNING and use default branch tip; note the unexpected RC state in PR `## Comments`.
+     Expect 0 or 1 match. If 0 → `BASE_COMMIT_CORE` = default branch tip. If 1 → `BASE_COMMIT_CORE` = RC branch tip. If ≥2 → log WARNING and use default branch tip; note the unexpected RC state in PR `## Comments`.
 
-   All subsequent steps reference `./repo-upstream/` as the primary workspace (where the fix is authored) and `./repo-client/` as the secondary (where the QA branch lands).
+   All subsequent steps reference `./repo-core/` as the primary workspace (where the fix is authored) and `./repo-client/` as the secondary (where the QA branch lands).
 
 6. **Write `./plan.md`** with `superpowers:writing-plans`. Small, sequential, testable steps.
 
@@ -401,16 +415,16 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 7a. **Pattern-reuse confirmation (after `./plan.md` is written, before implementation).**
 
-   **For upstream-rooted bugs (classified at step 3.2):** confirm via `grep -rn`:
-   1. The new behavior you're about to add in `./repo-upstream/` does NOT already exist there in a separate location. If it does, extend the existing handler instead of writing parallel code.
-   2. The same behavior does NOT exist as a per-site re-implementation in `./repo-client/sites/all/themes/custom/*/` or `./repo-client/sites/all/modules/{custom,features}/*/` — if it does, the per-site implementation can be removed once the upstream fix ships.
+   **For core-rooted bugs (classified at step 3.2):** confirm via `grep -rn`:
+   1. The new behavior you're about to add in `./repo-core/` does NOT already exist there in a separate location. If it does, extend the existing handler instead of writing parallel code.
+   2. The same behavior does NOT exist as a per-site re-implementation in `./repo-client/sites/all/themes/custom/*/` or `./repo-client/sites/all/modules/{custom,features}/*/` — if it does, the per-site implementation can be removed once the core fix ships.
 
    **For client-exclusive bugs (classified at step 3.2):** confirm via `grep -rn`:
    1. The new behavior you're about to add in `./repo-client/sites/all/themes/custom/<site>/` or equivalent does NOT have an equivalent handler in `./repo-client/profiles/compuclient/...` (vendored parent code).
-   1b. The DOM IDs and selectors you plan to bind do NOT appear as the direct target of `.on()`, `.click()`, `.toggle()`, `.show()`, `.hide()`, or similar event/visibility calls — or as the subject of `Drupal.behaviors` attach functions — in `./repo-client/profiles/compuclient/...`. If they do, the fix is upstream-rooted regardless of whether you are adding or modifying behaviour: the upstream code owns the interaction lifecycle for those elements.
-   2. **If either check fires**: re-classify as upstream-rooted. Restart from step 5 with the dual-clone setup — do NOT implement a per-site duplicate or overlay of a vendored upstream handler.
+   1b. The DOM IDs and selectors you plan to bind do NOT appear as the direct target of `.on()`, `.click()`, `.toggle()`, `.show()`, `.hide()`, or similar event/visibility calls — or as the subject of `Drupal.behaviors` attach functions — in `./repo-client/profiles/compuclient/...`. If they do, the fix is core-rooted regardless of whether you are adding or modifying behaviour: the core code owns the interaction lifecycle for those elements.
+   2. **If either check fires**: re-classify as core-rooted. Restart from step 5 with the dual-clone setup — do NOT implement a per-site duplicate or overlay of a vendored core handler.
 
-   This confirmation catches two related failure modes: **(a) the IESBUILD-247 case** — agent writes a per-site click-away handler (`menu-click-away.js`) for popup elements whose toggle is managed by `compu_bs5/includes/menu.inc`, passing check 1 by noting that `nested-dropdown.js` handles main-nav (not popups) — but failing 1b because `#cw-login-menu-popup-container` is a direct `.toggle()` target in `menu.inc`; **(b) the simpler duplication case** — agent writes a per-site handler that replicates an existing upstream handler verbatim.
+   This confirmation catches two related failure modes: **(a) the IESBUILD-247 case** — agent writes a per-site click-away handler (`menu-click-away.js`) for popup elements whose toggle is managed by `compu_bs5/includes/menu.inc`, passing check 1 by noting that `nested-dropdown.js` handles main-nav (not popups) — but failing 1b because `#cw-login-menu-popup-container` is a direct `.toggle()` target in `menu.inc`; **(b) the simpler duplication case** — agent writes a per-site handler that replicates an existing core handler verbatim.
 
    **Coordinator behavior gate (universal — applies before writing any new behavior, regardless of bug classification).**
 
@@ -418,10 +432,10 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Before writing any new behavior, answer:** who OWNS the open/close/toggle lifecycle of the affected DOM elements? The owner is the `Drupal.behaviors.*` implementation or PHP template function that creates, initializes, and binds the interaction for that element. Then:
 
-   - **Owner is in `./repo-client/profiles/compuclient/...`** → the fix is **upstream-rooted** regardless of where your new behavior would live. Re-classify. Restart from step 5 with the dual-clone setup. Fix the owner in the upstream repo — do NOT write a coordinator in the client repo.
+   - **Owner is in `./repo-client/profiles/compuclient/...`** → the fix is **core-rooted** regardless of where your new behavior would live. Re-classify. Restart from step 5 with the dual-clone setup. Fix the owner in the core repo — do NOT write a coordinator in the client repo.
    - **Owner is in `./repo-client/sites/all/themes/custom/<site>/` or client modules** → edit the owner directly. A focused fix inside the owning behavior is always preferable to a new coordinator.
 
-   **The IESBUILD-247 failure** is the canonical example: `menu-click-away.js` (a coordinator that calls `.hide()` on `#cw-login-menu-popup-container`) was written when `compu_bs5/includes/menu.inc` owns the popup toggle via `jQuery(document).ready() + .toggle()`. Correct fix: convert `menu.inc`'s popup code from raw `document.ready + .toggle()` to a `Drupal.behaviors.*` with its own click-away handler — an upstream PR against `compucorp/compu_bs5`. The `menu.inc` owner is in `profiles/compuclient/themes/contrib/compu_bs5/`, so this is upstream-rooted.
+   **The IESBUILD-247 failure** is the canonical example: `menu-click-away.js` (a coordinator that calls `.hide()` on `#cw-login-menu-popup-container`) was written when `compu_bs5/includes/menu.inc` owns the popup toggle via `jQuery(document).ready() + .toggle()`. Correct fix: convert `menu.inc`'s popup code from raw `document.ready + .toggle()` to a `Drupal.behaviors.*` with its own click-away handler — an core PR against `compucorp/compu_bs5`. The `menu.inc` owner is in `profiles/compuclient/themes/contrib/compu_bs5/`, so this is core-rooted.
 
    **Follow-up commit selector discipline.** The grep checks above apply to the initial implementation. They also apply to any follow-up commit that adds a new CSS selector to an existing event binding (e.g. extending a behavior to cover an additional paragraph bundle or component variant). Before adding any new selector — even in a small follow-up commit — confirm it matches at least one DOM element by grepping the repo's templates (`*.tpl.php`, `*.html.twig`, theme hook suggestion files, and `*.module` theme function calls). A selector that matches nothing is dead code and will be flagged by the reviewer. Example failure: IESBUILD-232 — agent extended `.paragraphs-item-cw-carousel` to also cover `.paragraphs-item-cw-carousel-parallax` without verifying the parallax class exists; the parallax variant is rendered via a `theme_hook_suggestion` that swaps the `.tpl.php` but keeps the same bundle wrapper class — the extra selector was dead code, caught in reviewer round 2, and reverted.
 
@@ -469,7 +483,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
     When both conditions hold:
 
     10a. Read `prompts/visual-repro.md`.
-    10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo-client/` or `./repo-upstream/`).
+    10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo-client/` or `./repo-core/`).
     10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`. If the substantive diff is CSS-only per `prompts/visual-repro.md` §8's gate, ALSO add the after-state pass — see §8 for the code fixture, the inject-after-reproduce ordering, and the `assert_bug_fixed` contract.
     10d. Run: `cd <workspace> && python3 repro.py`. Outputs `<workspace>/before.png` on success (and `<workspace>/after.png` when §8 applies). (The `cd` is required because `page.screenshot(path="...")` is cwd-relative.)
     10e. **Gitignore policy (v1.12+, mandatory):** Before committing any artifacts, ensure `.agent-artifacts/` is present in the **client repo's** `.gitignore`. Check and add if missing:
@@ -516,11 +530,11 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Single-target (client-exclusive):** Branch `agent/{{ issue.identifier }}-fix` in `./repo-client/` (created from `BASE_COMMIT` per invariant 3 and step 3b). Commit message starts with `{{ issue.identifier }}:`. Push to the client repo remote.
 
-   **Dual-target (upstream-rooted):** Two branches, two pushes, in this order:
+   **Dual-target (core-rooted):** Two branches, two pushes, in this order:
 
    **11a. Propagate the fix to the client's vendored copy** (`./repo-client/`):
 
-   1. Derive the target directory in the client repo. The mapping from upstream repo path to client vendored path is already encoded in step 3.2's table (e.g., upstream `profiles/compuclient/themes/contrib/compu_bs5/` → `compucorp/compu_bs5`, so the mount point in the client is `profiles/compuclient/themes/contrib/compu_bs5/`). Use that mapping directly rather than `find`:
+   1. Derive the target directory in the client repo. The mapping from core repo path to client vendored path is already encoded in step 3.2's table (e.g., core path `profiles/compuclient/themes/contrib/compu_bs5/` → `compucorp/compu_bs5`, so the mount point in the client is `profiles/compuclient/themes/contrib/compu_bs5/`). Use that mapping directly rather than `find`:
       ```bash
       # From step 3.2's mapping, e.g. for compu_bs5 → profiles/compuclient/themes/contrib/compu_bs5
       # For core-website module → profiles/compuclient/modules/contrib/core_website
@@ -529,14 +543,14 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
       ```
       If the path is not in step 3.2's table (i.e., you reached this step via `compuco_projects.yml` lookup for an unlisted module), use `find` as a fallback:
       ```bash
-      KEY_FILE=$(git -C ./repo-upstream diff-tree --no-commit-id --name-only -r HEAD | head -1)
+      KEY_FILE=$(git -C ./repo-core diff-tree --no-commit-id --name-only -r HEAD | head -1)
       MATCHES=$(find ./repo-client/profiles/compuclient -path "*/${KEY_FILE}" -maxdepth 8 2>/dev/null)
       ```
-      - One match → derive `APPLY_DIR` as the path under `./repo-client/` up to (but not including) the matched file's relative portion that exists in `./repo-upstream/`.
+      - One match → derive `APPLY_DIR` as the path under `./repo-client/` up to (but not including) the matched file's relative portion that exists in `./repo-core/`.
       - Zero matches → STOP; post Jira comment describing the mismatch.
       - Multiple matches → STOP; post Jira comment asking which path is correct.
 
-   2. Ensure `./repo-client/` is at the correct base before branching. `BASE_COMMIT_CLIENT` is the client's deployed tag resolved in step 3b for `./repo-client/`. The upstream's base is called `BASE_COMMIT_UPSTREAM` (default branch tip or RC branch tip from step 5).
+   2. Ensure `./repo-client/` is at the correct base before branching. `BASE_COMMIT_CLIENT` is the client's deployed tag resolved in step 3b for `./repo-client/`. The core repo's base is called `BASE_COMMIT_CORE` (default branch tip or RC branch tip from step 5).
       ```bash
       # Ensure we branch from the client's deployed tag, not a random HEAD
       git -C ./repo-client checkout "$BASE_COMMIT_CLIENT"
@@ -545,25 +559,25 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    3. Run patch propagation. `APPLY_DIR` is relative to the **client repo root** (e.g. `profiles/compuclient/modules/contrib/core_website`). All commands run from the workspace root — use `-C ./repo-client` consistently so `git apply` writes into the correct directory tree:
       ```bash
-      git -C ./repo-upstream diff HEAD~1..HEAD > /tmp/upstream.patch
-      git -C ./repo-client apply --directory="$APPLY_DIR" --check /tmp/upstream.patch
+      git -C ./repo-core diff HEAD~1..HEAD > /tmp/core.patch
+      git -C ./repo-client apply --directory="$APPLY_DIR" --check /tmp/core.patch
       ```
       - **`--check` passes** (expected common case): apply the patch, commit:
         ```bash
-        git -C ./repo-client apply --directory="$APPLY_DIR" /tmp/upstream.patch
+        git -C ./repo-client apply --directory="$APPLY_DIR" /tmp/core.patch
         # Stage only the files touched by the patch (non-interactive)
         git -C ./repo-client add "$APPLY_DIR"
         git -C ./repo-client commit -m \
-          "{{ issue.identifier }}: propagate upstream fix for QA testing"
+          "{{ issue.identifier }}: propagate core fix for QA testing"
         ```
         Set `PROPAGATION_STATUS=byte-identical`.
 
       - **`--check` fails**: attempt 3-way merge:
         ```bash
-        git -C ./repo-client apply --directory="$APPLY_DIR" --3way /tmp/upstream.patch
+        git -C ./repo-client apply --directory="$APPLY_DIR" --3way /tmp/core.patch
         ```
         If 3way succeeds: `git -C ./repo-client add "$APPLY_DIR"`, commit, set `PROPAGATION_STATUS=context-resolved`. Note in Jira comment later.
-        If 3way also fails: skip QA branch; set `PROPAGATION_STATUS=skipped`; note `AGENT_DONE` will be `success-upstream-only` if everything else passes.
+        If 3way also fails: skip QA branch; set `PROPAGATION_STATUS=skipped`; note `AGENT_DONE` will be `success-core-only` if everything else passes.
 
    4. When `PROPAGATION_STATUS != skipped`: push the QA branch:
       ```bash
@@ -571,8 +585,8 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
       ```
       **This push must happen before Phase B (the Jenkins dev-site deploy needs the branch on the remote) and before the reviewer runs (section 7 checks for its presence).**
 
-   **11b. Push the upstream branch** (`./repo-upstream/`):
-   Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT_UPSTREAM` per invariant 3 and step 5's RC detection). Commit message starts with `{{ issue.identifier }}:`. Push to the upstream repo remote. The reviewer needs this branch for the diff.
+   **11b. Push the core branch** (`./repo-core/`):
+   Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT_CORE` per invariant 3 and step 5's RC detection). Commit message starts with `{{ issue.identifier }}:`. Push to the core repo remote. The reviewer needs this branch for the diff.
 
 12. **Independent code review + open the PR (single coupled step).** This pair is intentionally NOT split — see invariant 9.
 
@@ -582,11 +596,11 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Diff to pass:**
    - **Single-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-client/`
-   - **Dual-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-upstream/` (the upstream PR's diff). The client QA branch diff is byte-identical (or close after 3-way) — do NOT send it separately; reviewer section 7 (dual-target completeness) verifies only that the QA branch push happened.
+   - **Dual-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-core/` (the core PR's diff). The client QA branch diff is byte-identical (or close after 3-way) — do NOT send it separately; reviewer section 7 (dual-target completeness) verifies only that the QA branch push happened.
 
    **Additional v1.12 inputs to pass:**
    - `workspace_layout`: `"single"` or `"dual"`
-   - `target_repo_type`: `"upstream"` (dual-target runs) or `"client"` (single-target runs)
+   - `target_repo_type`: `"core"` (dual-target runs) or `"client"` (single-target runs)
    - `propagation_status`: `"byte-identical"`, `"context-resolved"`, or `"skipped"` (dual-target only; omit for single-target)
 
    12b. **Interpret the verdict** (loop per invariant 9):
@@ -596,7 +610,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    12b-bis. **Two-phase dev-site verification** (mandatory if the target repo is in `SITE_DEPLOYABLE_REPOS` per invariant #5; skip with a one-line `## Comments` note otherwise — e.g. extension, theme, or infra repo). Runs ONLY after 12b returned `verdict: approve`; the reviewer evaluates code, the dev site evaluates the deployed result.
 
-   **Dual-target note:** For upstream-rooted runs, both phases use `./repo-client/` as the deploy target — because the bug exhibits on the client site, not on the upstream extension in isolation. The `qa-<TICKET>` branch in `./repo-client/` must be pushed (step 11a) before Phase B triggers. If `PROPAGATION_STATUS == skipped`, Phase B is also skipped (no QA branch to deploy); `AGENT_DONE` becomes `success-upstream-only` after the upstream PR opens.
+   **Dual-target note:** For core-rooted runs, both phases use `./repo-client/` as the deploy target — because the bug exhibits on the client site, not on the core extension in isolation. The `qa-<TICKET>` branch in `./repo-client/` must be pushed (step 11a) before Phase B triggers. If `PROPAGATION_STATUS == skipped`, Phase B is also skipped (no QA branch to deploy); `AGENT_DONE` becomes `success-core-only` after the core PR opens.
 
    **Skip guard — doc-only diffs:** Run `git diff --stat <default-branch>..HEAD` and if every changed path matches `*.md`, `*.txt`, or is comment-only, skip 12b-bis with `## Comments` note: "Dev-site step skipped: doc-only diff." Saves Jenkins on trivial PRs.
 
@@ -811,9 +825,9 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Single-target:** PR targets the client repo's default branch (`master` for most client repos, or the RC branch if one is active).
 
-   **Dual-target (upstream-rooted):** PR targets the **upstream repo**'s default branch (or active RC branch, per step 5 RC detection). `gh pr create` runs from inside `<workspace>/repo-upstream/`. No PR is opened on the client repo — only the `qa-<TICKET>` branch push (already done in step 11a).
+   **Dual-target (core-rooted):** PR targets the **core repo**'s default branch (or active RC branch, per step 5 RC detection). `gh pr create` runs from inside `<workspace>/repo-core/`. No PR is opened on the client repo — only the `qa-<TICKET>` branch push (already done in step 11a).
 
-   When `PROPAGATION_STATUS == skipped` (3-way merge failed): still open the upstream PR. Note in PR `## Comments`: _"Client QA branch propagation failed — vendored copy has diverged. See Jira comment for operator instructions."_ `AGENT_DONE` will be `success-upstream-only`. For the PR body's `## After` section, use the manual-verification block (step 10e's `## Manual verification required` template) — there is no `after.png` and no dev-site Phase B in this path.
+   When `PROPAGATION_STATUS == skipped` (3-way merge failed): still open the core PR. Note in PR `## Comments`: _"Client QA branch propagation failed — vendored copy has diverged. See Jira comment for operator instructions."_ `AGENT_DONE` will be `success-core-only`. For the PR body's `## After` section, use the manual-verification block (step 10e's `## Manual verification required` template) — there is no `after.png` and no dev-site Phase B in this path.
 
 13. **Post the PR link + QA branch as a Jira comment** via the Atlassian MCP.
 
@@ -834,19 +848,19 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Dual-target:** single comment with both links:
 
-   > Upstream PR (the actual fix): `<inlineCard: https://github.com/compucorp/<upstream>/pull/<N>>`
+   > Core PR (the actual fix): `<inlineCard: https://github.com/compucorp/<core>/pull/<N>>`
    >
    > Client QA branch (for QA team testing): `<inlineCard: https://github.com/compucorp/<client>/tree/qa-{{ issue.identifier }}>`
    >
    > _(if Phase B ran)_ Live fix on dev site: `<inlineCard: https://<devsite-host>>` (auto-expires ~24 h).
    >
-   > Workflow: QA team checks out the client QA branch on a test deployment, validates the fix in client context, then approves the upstream PR for merge. Once the upstream PR merges and is included in the next Compuclient release, this ticket can close as fixed-upstream.
+   > Workflow: QA team checks out the client QA branch on a test deployment, validates the fix in client context, then approves the core PR for merge. Once the core PR merges and is included in the next Compuclient release, this ticket can close as fixed-in-core.
 
    When `PROPAGATION_STATUS == skipped`:
 
-   > Upstream PR (the actual fix): `<inlineCard: https://github.com/compucorp/<upstream>/pull/<N>>`
+   > Core PR (the actual fix): `<inlineCard: https://github.com/compucorp/<core>/pull/<N>>`
    >
-   > Client QA branch: propagation failed (`git apply --3way` conflict — vendored copy has diverged from upstream). Manual action: (a) cherry-pick the upstream commit onto a fresh `qa-{{ issue.identifier }}` branch resolving the conflict by hand, or (b) wait for the upstream PR to merge into the next Compuclient release and the fix will propagate automatically.
+   > Client QA branch: propagation failed (`git apply --3way` conflict — vendored copy has diverged from core). Manual action: (a) cherry-pick the core commit onto a fresh `qa-{{ issue.identifier }}` branch resolving the conflict by hand, or (b) wait for the core PR to merge into the next Compuclient release and the fix will propagate automatically.
 
 14. **Remove the `agent:todo` label** from the ticket via the Atlassian MCP. This signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll. If you blocked instead of completing, leave the label on so a human can decide whether to retry; document the blocker in the Jira comment.
 
@@ -854,7 +868,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    - **Single-target:** `success <ISO-8601-timestamp> {{ issue.identifier }}`
    - **Dual-target (QA branch pushed successfully):** `success-dual <ISO-8601-timestamp> {{ issue.identifier }}`
-   - **Dual-target (propagation failed, upstream PR only):** `success-upstream-only <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Dual-target (propagation failed, core PR only):** `success-core-only <ISO-8601-timestamp> {{ issue.identifier }}`
 
    Do not transition the Jira status yourself — leave that to the human reviewing the PR.
 
@@ -880,8 +894,8 @@ When blocked, the Jira comment should state: what's missing, why it blocks the w
 | Prefix | Meaning | Written by |
 |---|---|---|
 | `success` | Single-target run: PR opened, Jira commented, label removed. | Step 15 |
-| `success-dual` | Dual-target run: upstream PR opened AND client QA branch pushed AND dual-link Jira comment posted. | Step 15 |
-| `success-upstream-only` | Dual-target run: upstream PR opened successfully, but client QA branch push failed (3-way merge conflict on patch propagation). Jira comment includes operator instructions for manual QA branch creation. | Step 15 |
+| `success-dual` | Dual-target run: core PR opened AND client QA branch pushed AND dual-link Jira comment posted. | Step 15 |
+| `success-core-only` | Dual-target run: core PR opened successfully, but client QA branch push failed (3-way merge conflict on patch propagation). Jira comment includes operator instructions for manual QA branch creation. | Step 15 |
 | `dry-run` | DRY-RUN OVERRIDE ran through step 12a, reviewer approved, no external side effects. | DRY-RUN OVERRIDE block |
 | `blocked-review` | Reviewer subagent rejected at N=3 (invariant #9 loop limit). | Step 12b |
 | `blocked-verify` | Reviewer approved, dev-site deploy succeeded, but `assert_bug_fixed` did not fire — typically the fresh anondb lacks the data state that triggers the bug. Operator decides whether to seed data + retry, push the PR manually after sanity-checking the dev site, or widen anondb selection. | Step 12b-bis |
