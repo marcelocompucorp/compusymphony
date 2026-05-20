@@ -123,6 +123,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
+        state = record_recent_session(state, running_entry)
         session_id = running_entry_session_id(running_entry)
 
         state =
