@@ -664,7 +664,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    pathlib.Path("<workspace>/.devsite-host").write_text(host)
    print(f"PHASE_A_HOST={host}")
    ```
-   Exit code `42` → sleep 60 s, re-run. `0` → proceed to A5. Any other non-zero or cap exceeded → **Phase A failure** (see failure table; skip both phases, continue to 12c).
+   Exit code `42` → sleep 60 s, re-run **`poll_phase_a.py`** (NOT `trigger_phase_a.py` — the job is already queued/running; re-running the trigger creates a duplicate dev site). `0` → proceed to A5. Any other non-zero or cap exceeded → **Phase A failure** (see failure table; skip both phases, continue to 12c).
 
    **A5. Capture before.png:**
 
@@ -753,7 +753,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    pathlib.Path("<workspace>/.release-done").write_text("ok")
    print(f"PHASE_B_DONE host={devsite_host}")
    ```
-   Exit code `42` → sleep 60 s, re-run. `0` → proceed to B3. Any other non-zero or cap exceeded → **Phase B failure** (see failure table; skip `after.png`, continue to 12c).
+   Exit code `42` → sleep 60 s, re-run **`poll_phase_b.py`** (NOT `trigger_phase_b.py` — the job is already queued/running; re-running the trigger creates a duplicate release). `0` → proceed to B3. Any other non-zero or cap exceeded → **Phase B failure** (see failure table; skip `after.png`, continue to 12c).
 
    **B3. Capture after.png (and optionally after.gif):**
 
