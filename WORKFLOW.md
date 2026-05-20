@@ -392,20 +392,13 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 5. **Clone the target repo(s).**
 
-   - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Create a convenience symlink: `ln -sfn ./repo-client ./repo-core` so that step references to `./repo-core/` resolve to the same clone. The run is single-target when `realpath ./repo-core` == `realpath ./repo-client`.
+   - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Do **not** create `./repo-core/`. Subsequent steps that reference `./repo-core/` apply only to dual-target runs (each such step is explicitly scoped). The run is single-target whenever `./repo-core/` is absent from the workspace.
 
    - **Core-rooted bugs (dual-target):** clone BOTH and track two base commits:
-     - `./repo-core/` ← `compucorp/<core-repo>` (the PR target). Base commit is called **`BASE_COMMIT_CORE`** — the core repo's default branch tip, OR active RC branch if one exists (see RC detection below).
+     - `./repo-core/` ← `compucorp/<core-repo>` (the PR target). Base commit is called **`BASE_COMMIT_CORE`** — the core repo's default branch tip (discovered via `gh api "repos/compucorp/<core-repo>" --jq .default_branch`). RC-branch targeting is deferred to a future Symphony version; if a Compuclient release is mid-flight, the operator opens the core PR manually against the RC branch.
      - `./repo-client/` ← `compucorp/<client-repo>` (the QA-branch target). Base commit is called **`BASE_COMMIT_CLIENT`** — the client's deployed tag resolved by step 3b Mongo lookup, same as for single-target runs.
 
      Step 3b's Mongo lookup applies to `./repo-client/` only. It does NOT apply to `./repo-core/` (the core repo isn't deployed as a standalone site).
-
-     **RC branch detection (core repos):**
-     ```bash
-     gh api "repos/<core>/branches" --jq '.[].name' | grep -E \
-       '^7\.x-[0-9]+\.[0-9]+(\.[0-9]+|-(patch|alpha|beta)[.0-9]+)*-rc$'
-     ```
-     Expect 0 or 1 match. If 0 → `BASE_COMMIT_CORE` = default branch tip. If 1 → `BASE_COMMIT_CORE` = RC branch tip. If ≥2 → log WARNING and use default branch tip; note the unexpected RC state in PR `## Comments`.
 
    All subsequent steps reference `./repo-core/` as the primary workspace (where the fix is authored) and `./repo-client/` as the secondary (where the QA branch lands).
 
@@ -550,7 +543,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
       - Zero matches → STOP; post Jira comment describing the mismatch.
       - Multiple matches → STOP; post Jira comment asking which path is correct.
 
-   2. Ensure `./repo-client/` is at the correct base before branching. `BASE_COMMIT_CLIENT` is the client's deployed tag resolved in step 3b for `./repo-client/`. The core repo's base is called `BASE_COMMIT_CORE` (default branch tip or RC branch tip from step 5).
+   2. Ensure `./repo-client/` is at the correct base before branching. `BASE_COMMIT_CLIENT` is the client's deployed tag resolved in step 3b for `./repo-client/`. The core repo's base is called `BASE_COMMIT_CORE` (default branch tip — see step 5).
       ```bash
       # Ensure we branch from the client's deployed tag, not a random HEAD
       git -C ./repo-client checkout "$BASE_COMMIT_CLIENT"
@@ -586,7 +579,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
       **This push must happen before Phase B (the Jenkins dev-site deploy needs the branch on the remote) and before the reviewer runs (section 7 checks for its presence).**
 
    **11b. Push the core branch** (`./repo-core/`):
-   Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT_CORE` per invariant 3 and step 5's RC detection). Commit message starts with `{{ issue.identifier }}:`. Push to the core repo remote. The reviewer needs this branch for the diff.
+   Branch `agent/{{ issue.identifier }}-fix` (created from `BASE_COMMIT_CORE` per invariant 3 and step 5). Commit message starts with `{{ issue.identifier }}:`. Push to the core repo remote. The reviewer needs this branch for the diff.
 
 12. **Independent code review + open the PR (single coupled step).** This pair is intentionally NOT split — see invariant 9.
 
@@ -823,9 +816,11 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round AND (12b-bis ran to completion OR 12b-bis was skipped per its own gates — but NEVER if 12b-bis blocked). Never run `gh pr create` directly without those rounds having been the final actions; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
 
+   **Core PR gate (dual-target only — first-class invariant):** for core-rooted runs, the core PR (against `compucorp/<core>`) opens **ONLY** after Phase B's `after.png` confirms `assert_bug_fixed` fired in the client's deployed environment. If Phase B's assertion fails: do NOT open the core PR. Set `AGENT_DONE = blocked-verify`. Leave the pushed `agent/<TICKET>-fix` branch (on the core repo) and `qa-<TICKET>` branch (on the client repo) for operator inspection. Phase B failure indicates that the upstream fix is either wrong, incomplete, or that the dev-site lacks the data state to expose the bug — either way, an unverified core PR would spread the problem to the next Compuclient release.
+
    **Single-target:** PR targets the client repo's default branch (`master` for most client repos, or the RC branch if one is active).
 
-   **Dual-target (core-rooted):** PR targets the **core repo**'s default branch (or active RC branch, per step 5 RC detection). `gh pr create` runs from inside `<workspace>/repo-core/`. No PR is opened on the client repo — only the `qa-<TICKET>` branch push (already done in step 11a).
+   **Dual-target (core-rooted):** PR targets the **core repo**'s default branch. `gh pr create` runs from inside `<workspace>/repo-core/`. No PR is opened on the client repo — only the `qa-<TICKET>` branch push (already done in step 11a). **RC override:** if a Compuclient release is mid-flight and the core PR should target an active RC branch instead of `master`, the operator changes the PR base after `gh pr create` — Symphony v1.13 always targets default. (Same note in step 5; restated here because it's where the change happens.)
 
    When `PROPAGATION_STATUS == skipped` (3-way merge failed): still open the core PR. Note in PR `## Comments`: _"Client QA branch propagation failed — vendored copy has diverged. See Jira comment for operator instructions."_ `AGENT_DONE` will be `success-core-only`. For the PR body's `## After` section, use the manual-verification block (step 10e's `## Manual verification required` template) — there is no `after.png` and no dev-site Phase B in this path.
 
