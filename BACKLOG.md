@@ -4,6 +4,50 @@ Engineering feedback items deferred from the v1.13 batch, pending a future plann
 
 ---
 
+## Item 18 — Agent must STOP after writing AGENT_DONE
+
+**Status:** Open. Surfaced by IESBUILD-247 (2026-05-21).
+
+**Problem.** WORKFLOW.md step 15 reads *"Write AGENT_DONE and stop."* The agent reliably writes the AGENT_DONE file but doesn't actually exit the Claude Code session afterwards. Instead it keeps processing — typically retrying whatever caused the blocker.
+
+**Concrete failure case.** IESBUILD-247 Phase B's `assert_bug_fixed` failed (root cause: `$(document).once(...)` is a no-op in Drupal 7, see backlog item context). The agent correctly wrote:
+
+```
+AGENT_DONE = blocked-verify 2026-05-20T23:17:29Z IESBUILD-247
+```
+
+Then it did NOT stop. Over the next ~70 minutes it triggered **three additional Phase B Jenkins builds** (`_Release Dev Site` #3808, #3809, #3810), each re-deploying the same broken `agent-IESBUILD-247-fix` tag, running Playwright against the dev site, observing the same `assert_bug_fixed` failure, and looping. Symphony's dashboard kept showing the session as "Running" (57m / 1 turn) because the Claude Code process never exited. Operator had to manually `kill 71124 71130` and `POST .../stop` on the in-flight Jenkins build to break the loop.
+
+**Why this happens.** Step 15 is a prose instruction telling the agent to stop. There's no programmatic enforcement: writing AGENT_DONE doesn't trigger any side effect that would actually terminate the process. The agent, in its loop, sees the failed assertion and self-prompts to retry — the same training-time inclination that makes agents persist through obstacles.
+
+**Compounding factor: Phase B is cheap to re-trigger.** The `trigger_release_devsite` helper is a single Jenkins POST that returns quickly. Each retry costs ~5 min of Jenkins time + ~2 min of Playwright assertion. The agent doesn't perceive this as "I'm in a loop" — to it, each retry is "trying the workflow again from where it failed".
+
+**Proposed fix (sketch — for a v1.14 plan to refine).**
+
+Two layers, defense in depth:
+
+1. **WORKFLOW.md step 15 hardening.** Replace the prose "write AGENT_DONE and stop" with an explicit terminal sequence the agent runs as one atomic action:
+   ```bash
+   echo "blocked-verify $(date -u +%Y-%m-%dT%H:%M:%SZ) <TICKET>" > AGENT_DONE
+   exit
+   ```
+   The shell `exit` (or its tool-call equivalent: don't make any further tool calls; immediately produce a terminal message containing only the AGENT_DONE content) is the stop. This makes the stop a single observable action rather than a state the agent has to remember to leave.
+
+2. **Symphony orchestrator-side enforcement.** Have the Elixir orchestrator watch for AGENT_DONE in the workspace. When AGENT_DONE appears, kill the agent process (SIGTERM with 30s timeout, then SIGKILL). This catches the case where the agent writes the file and then misbehaves. Implementation: `WorkflowStore`-style file polling on `<workspace>/AGENT_DONE`. Could share the same 1-second poll interval.
+
+The orchestrator-side enforcement is the load-bearing fix — relying only on agent self-discipline is the failure mode we just observed.
+
+**Why this matters now.** v1.13's Core PR gate (item 12) WORKED for IESBUILD-247 — it correctly blocked the bad PR. But the gate's effectiveness was diluted by the agent then quietly burning ~70 min of CI time, dev-site re-deploys, and Anthropic API tokens in a retry loop. If item 18 isn't fixed, every `blocked-verify` outcome becomes a runaway retry until a human notices.
+
+**Open questions for v1.14 plan stage:**
+- Does Claude Code's `--print` mode support a clean way to signal "session done, exit cleanly"? If yes, prefer that over external SIGTERM.
+- Should the kill window after AGENT_DONE be the same for all sentinels (success, blocked-verify, blocked-review, blocked), or differ? E.g. maybe `success` doesn't need a kill (Jira-comment-then-stop is the natural tail), but `blocked-*` does (the agent has nothing more it should be doing).
+- Is there a way to make this fix backwards-compatible with in-flight pre-v1.14 sessions, or does it require a clean cutover?
+
+**Action for IESBUILD-247:** processes killed, retry Jenkins build aborted, ticket left in `blocked-verify` state with no `agent:todo` (operator removed). Next dispatch should wait until item 18 is in place, otherwise the same loop can happen again the moment a `blocked-verify` is hit.
+
+---
+
 ## Item 17 — Ticket-symptom grounding gate
 
 **Status:** Open. Surfaced by IESBUILD-229 (PR #231, 2026-05-20).
