@@ -412,6 +412,8 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    This confirmation catches two related failure modes: **(a) the IESBUILD-247 case** — agent writes a per-site click-away handler (`menu-click-away.js`) for popup elements whose toggle is managed by `compu_bs5/includes/menu.inc`, passing check 1 by noting that `nested-dropdown.js` handles main-nav (not popups) — but failing 1b because `#cw-login-menu-popup-container` is a direct `.toggle()` target in `menu.inc`; **(b) the simpler duplication case** — agent writes a per-site handler that replicates an existing upstream handler verbatim.
 
+   **Follow-up commit selector discipline.** The grep checks above apply to the initial implementation. They also apply to any follow-up commit that adds a new CSS selector to an existing event binding (e.g. extending a behavior to cover an additional paragraph bundle or component variant). Before adding any new selector — even in a small follow-up commit — confirm it matches at least one DOM element by grepping the repo's templates (`*.tpl.php`, `*.html.twig`, theme hook suggestion files, and `*.module` theme function calls). A selector that matches nothing is dead code and will be flagged by the reviewer. Example failure: IESBUILD-232 — agent extended `.paragraphs-item-cw-carousel` to also cover `.paragraphs-item-cw-carousel-parallax` without verifying the parallax class exists; the parallax variant is rendered via a `theme_hook_suggestion` that swaps the `.tpl.php` but keeps the same bundle wrapper class — the extra selector was dead code, caught in reviewer round 2, and reverted.
+
 8. **Implement with `superpowers:test-driven-development`.** Write a failing test that captures the bug. Make it pass with the smallest reasonable change.
 
    **Build-artifact policy (theme repos).** If you edit `*.scss`/`*.sass` in a theme directory that has a build script (`package.json` with a `"build"` script, or `gulpfile.js`), also regenerate the corresponding compiled CSS (`dist/css/*.css` or equivalent) and commit it in the same fix commit. `compucorp/ase` and `compucorp/ies` both serve the committed compiled CSS directly via theme `.info` declarations and do NOT rebuild in CI — an SCSS-source-only PR deploys with no styling change. If the local build produces output incompatible with the committed format (e.g., minified vs expanded), hand-append the compiled rules in the expected format and document this in PR `## Comments`. See `code-reviewer.md` "Build-artifact policy" section for the reviewer-side invariant.
@@ -753,7 +755,9 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    ```
    Exit code `42` → sleep 60 s, re-run. `0` → proceed to B3. Any other non-zero or cap exceeded → **Phase B failure** (see failure table; skip `after.png`, continue to 12c).
 
-   **B3. Capture after.png:**
+   **B3. Capture after.png (and optionally after.gif):**
+
+   Before capturing, **re-evaluate the `visual-repro.md §10.1` gate**: is the bug's evidence a sequence of interactions — an animation completing, a counter updating, a dropdown closing, a state transition playing out? If yes, enable video recording for this Phase B context pass and convert to GIF per §10.3 (upload to S3 per §10.5). Specify what the GIF should show — e.g. for a carousel bug: slide animating while counter increments, indicator highlight moving, wrap-around from last to first slide. If the fix is purely CSS/static (colour, layout, spacing), skip video and take a static screenshot only.
 
    Run `visual-repro.md §9b`: `assert_bug_fixed` → capture `after.png`. Save to `<workspace>/after.png`. Per the v1.12 gitignore policy (step 10e), screenshots are workspace-only — do NOT commit to the repo.
 
@@ -798,21 +802,36 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 13. **Post the PR link + QA branch as a Jira comment** via the Atlassian MCP.
 
-   **Single-target:** one concise comment, e.g.: `PR: https://github.com/... — please review.`
+   **Deduplication guard (mandatory).** Before posting, fetch the ticket's existing comments (`getJiraIssue` with `fields: ["comment"]`) and scan for any comment whose body already contains the PR URL you are about to post. If found, skip this step entirely — a duplicate comment causes confusion for reviewers and signals a workflow re-run. Log: "Jira comment skipped — PR URL already present in comment `<id>`."
+
+   **Format.** Always use ADF `inlineCard` nodes for GitHub URLs (PR links, branch links, dev-site URLs that are GitHub pages). Plain-text URLs do not render as smart link cards in Jira. Use `contentFormat: "adf"` and wrap each URL in:
+   ```json
+   { "type": "inlineCard", "attrs": { "url": "<URL>" } }
+   ```
+
+   **Dev site link.** If Phase B ran successfully, include the dev site URL (`DEVSITE_HOST` from the Phase B poll output) in the comment so the QA team can visit the live fix directly. Note the auto-expiry: dev sites are typically live for 24–48 hours after the run.
+
+   **Single-target:** one concise comment, e.g.:
+
+   > PR: `<inlineCard: https://github.com/compucorp/<repo>/pull/<N>>` — please review.
+   >
+   > _(if Phase B ran)_ Live fix: `<inlineCard: https://<devsite-host>>` (dev site, auto-expires ~24 h).
 
    **Dual-target:** single comment with both links:
 
-   > _Upstream PR (the actual fix): https://github.com/compucorp/<upstream>/pull/<N>_
+   > Upstream PR (the actual fix): `<inlineCard: https://github.com/compucorp/<upstream>/pull/<N>>`
    >
-   > _Client QA branch (for QA team testing): https://github.com/compucorp/<client>/tree/qa-{{ issue.identifier }}_
+   > Client QA branch (for QA team testing): `<inlineCard: https://github.com/compucorp/<client>/tree/qa-{{ issue.identifier }}>`
    >
-   > _Workflow: QA team checks out the client QA branch on a test deployment, validates the fix in client context, then approves the upstream PR for merge. Once the upstream PR merges and is included in the next Compuclient release, this ticket can close as fixed-upstream._
+   > _(if Phase B ran)_ Live fix on dev site: `<inlineCard: https://<devsite-host>>` (auto-expires ~24 h).
+   >
+   > Workflow: QA team checks out the client QA branch on a test deployment, validates the fix in client context, then approves the upstream PR for merge. Once the upstream PR merges and is included in the next Compuclient release, this ticket can close as fixed-upstream.
 
    When `PROPAGATION_STATUS == skipped`:
 
-   > _Upstream PR (the actual fix): https://github.com/compucorp/<upstream>/pull/<N>_
+   > Upstream PR (the actual fix): `<inlineCard: https://github.com/compucorp/<upstream>/pull/<N>>`
    >
-   > _Client QA branch: propagation failed (`git apply --3way` conflict — vendored copy has diverged from upstream). Manual action: (a) cherry-pick the upstream commit onto a fresh `qa-{{ issue.identifier }}` branch resolving the conflict by hand, or (b) wait for the upstream PR to merge into the next Compuclient release and the fix will propagate automatically._
+   > Client QA branch: propagation failed (`git apply --3way` conflict — vendored copy has diverged from upstream). Manual action: (a) cherry-pick the upstream commit onto a fresh `qa-{{ issue.identifier }}` branch resolving the conflict by hand, or (b) wait for the upstream PR to merge into the next Compuclient release and the fix will propagate automatically.
 
 14. **Remove the `agent:todo` label** from the ticket via the Atlassian MCP. This signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll. If you blocked instead of completing, leave the label on so a human can decide whether to retry; document the blocker in the Jira comment.
 
@@ -866,3 +885,13 @@ echo '{"step": N, "total": T, "label": "Step heading text"}' > .symphony-status.
 Where `N` is the current step number (1-based), `T` is the total number of steps, and `"Step heading text"` is the exact heading of that step. The atomic rename (write to `.tmp` then `mv`) prevents partial reads.
 
 This file is read by the Symphony dashboard to show real-time progress. It costs zero tokens.
+
+## PR URL reporting
+
+Immediately after `gh pr create` succeeds, write the PR URL to the workspace:
+
+```bash
+echo '<pr_url>' > .symphony-pr-url
+```
+
+Replace `<pr_url>` with the URL returned by `gh pr create` (e.g. `https://github.com/org/repo/pull/123`). This file is read by the Symphony dashboard to display a link in the Recent sessions table.

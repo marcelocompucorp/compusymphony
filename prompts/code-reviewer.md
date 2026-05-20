@@ -240,6 +240,8 @@ If the parent supplies the prospective PR description, verify it follows
 Not everything is a BLOCKER. Be honest with severity — a runaway BLOCKER
 count means the parent agent loops forever, which destroys throughput.
 
+**SUGGESTION compliance check (final round only).** On the final reviewer round (the round whose verdict will be `approve`), verify that any SUGGESTION from earlier rounds that the agent chose NOT to address is documented in the PR `## Comments` section with a brief rationale (e.g. *"r1-suggestion-1: cosmetic `settings` param — not addressed to keep diff minimal"*). **SUGGESTION** (not BLOCKER) if unaddressed SUGGESTIONs are absent from `## Comments` — the fix is still correct; this is a documentation gap only. Do not block approval over this.
+
 ## Prior-findings handling (for re-review rounds)
 
 If you receive `prior_findings` (from `review-result-r<N-1>.json`):
