@@ -507,3 +507,20 @@ pre,
 .priority-high   { background: #ffedd5; color: #c2410c; }
 .priority-medium { background: #fef9c3; color: #854d0e; }
 .priority-low    { background: #f0fdf4; color: #166534; }
+
+/* Session status badges (Recent sessions table) */
+.session-status-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.18rem 0.5rem;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+.session-status-success               { background: #d1fae5; color: #065f46; }
+.session-status-success-dual          { background: #d1fae5; color: #065f46; }
+.session-status-success-upstream-only { background: #fef3c7; color: #92400e; }
+.session-status-dry-run               { background: #f3f4f6; color: #6b7280; }
+.session-status-blocked               { background: #fee2e2; color: #991b1b; }
+.session-status-blocked-review        { background: #ffedd5; color: #9a3412; }
+.session-status-blocked-verify        { background: #ffedd5; color: #9a3412; }

@@ -35,6 +35,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       pending: [],
+      recent_sessions: [],
       agent_totals: nil,
       agent_rate_limits: nil
     ]
@@ -366,6 +367,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
+        state = record_recent_session(state, running_entry)
 
         if cleanup_workspace do
           cleanup_issue_workspace(identifier)
@@ -461,6 +463,58 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp terminate_task(_pid), do: :ok
+
+  @max_recent_sessions 20
+
+  defp record_recent_session(%State{} = state, running_entry) do
+    session = capture_session_data(running_entry)
+    recent = [session | state.recent_sessions] |> Enum.take(@max_recent_sessions)
+    %{state | recent_sessions: recent}
+  end
+
+  defp capture_session_data(running_entry) do
+    now = DateTime.utc_now()
+    identifier = Map.get(running_entry, :identifier)
+    root = Config.workspace_root()
+
+    status =
+      with true <- is_binary(identifier),
+           {:ok, content} <- File.read(Path.join([root, identifier, "AGENT_DONE"])),
+           [prefix | _] <- content |> String.trim() |> String.split(" ") do
+        prefix
+      else
+        _ -> nil
+      end
+
+    pr_url =
+      with true <- is_binary(identifier),
+           {:ok, url} <- File.read(Path.join([root, identifier, ".symphony-pr-url"])) do
+        String.trim(url)
+      else
+        _ -> nil
+      end
+
+    issue = Map.get(running_entry, :issue)
+    started_at = Map.get(running_entry, :started_at)
+
+    duration_seconds =
+      if is_struct(started_at, DateTime) do
+        DateTime.diff(now, started_at, :second)
+      end
+
+    %{
+      identifier: identifier,
+      title: issue && issue.title,
+      url: issue && issue.url,
+      status: status,
+      started_at: started_at,
+      finished_at: now,
+      duration_seconds: duration_seconds,
+      turn_count: Map.get(running_entry, :turn_count, 0),
+      total_tokens: Map.get(running_entry, :agent_total_tokens, 0),
+      pr_url: pr_url
+    }
+  end
 
   defp choose_issues(sorted_issues, state) do
     active_states = active_state_set()
@@ -1010,6 +1064,7 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        pending: pending,
+       recent_sessions: state.recent_sessions,
        agent_totals: state.agent_totals,
        rate_limits: Map.get(state, :agent_rate_limits),
        polling: %{

@@ -337,6 +337,101 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </div>
           <% end %>
         </section>
+
+        <section class="section-card">
+          <div class="section-header">
+            <div>
+              <h2 class="section-title">Recent sessions</h2>
+              <p class="section-copy">Last 20 completed agent runs since Symphony started.</p>
+            </div>
+          </div>
+
+          <%= if @payload.recent_sessions == [] do %>
+            <p class="empty-state">No completed sessions yet — runs will appear here when they finish.</p>
+          <% else %>
+            <div class="table-wrap">
+              <table class="data-table" style="min-width: 900px;">
+                <colgroup>
+                  <col style="width: 10rem;" />
+                  <col />
+                  <col style="width: 10rem;" />
+                  <col style="width: 9rem;" />
+                  <col style="width: 7rem;" />
+                  <col style="width: 5rem;" />
+                  <col style="width: 7rem;" />
+                  <col style="width: 5rem;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Issue</th>
+                    <th>Title</th>
+                    <th>Status</th>
+                    <th>Finished</th>
+                    <th>Duration</th>
+                    <th>Turns</th>
+                    <th>Tokens</th>
+                    <th>PR</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={entry <- @payload.recent_sessions}>
+                    <td>
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.identifier || "—" %></span>
+                        <%= if entry.url do %>
+                          <a class="issue-link" href={entry.url} target="_blank" rel="noopener">link</a>
+                        <% end %>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="issue-title-text" title={entry.title || ""}>
+                        <%= truncate_title(entry.title) %>
+                      </span>
+                    </td>
+                    <td>
+                      <%= if entry.status do %>
+                        <span class={session_status_badge_class(entry.status)}>
+                          <%= entry.status %>
+                        </span>
+                      <% else %>
+                        <span class="muted">—</span>
+                      <% end %>
+                    </td>
+                    <td class="mono numeric"><%= format_short_datetime(entry.finished_at) %></td>
+                    <td class="numeric">
+                      <%= if entry.duration_seconds do %>
+                        <%= format_runtime_seconds(entry.duration_seconds) %>
+                      <% else %>
+                        <span class="muted">—</span>
+                      <% end %>
+                    </td>
+                    <td class="numeric">
+                      <%= if entry.turn_count && entry.turn_count > 0 do %>
+                        <%= entry.turn_count %>
+                      <% else %>
+                        <span class="muted">—</span>
+                      <% end %>
+                    </td>
+                    <td class="numeric">
+                      <%= if entry.total_tokens && entry.total_tokens > 0 do %>
+                        <%= format_int(entry.total_tokens) %>
+                      <% else %>
+                        <span class="muted">—</span>
+                      <% end %>
+                    </td>
+                    <td>
+                      <%= if entry.pr_url do %>
+                        <a class="issue-link" href={entry.pr_url} target="_blank" rel="noopener">PR ↗</a>
+                      <% else %>
+                        <span class="muted">—</span>
+                      <% end %>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </section>
       <% end %>
     </section>
     """
@@ -439,6 +534,26 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp truncate_title(title), do: String.slice(title, 0, 57) <> "…"
 
   defp max_concurrent_agents, do: SymphonyElixir.Config.max_concurrent_agents()
+
+  defp session_status_badge_class(status) when is_binary(status) do
+    "session-status-badge session-status-#{status}"
+  end
+
+  defp session_status_badge_class(_), do: "session-status-badge"
+
+  defp format_short_datetime(nil), do: "—"
+
+  defp format_short_datetime(iso8601) when is_binary(iso8601) do
+    case DateTime.from_iso8601(iso8601) do
+      {:ok, dt, _} ->
+        "#{String.pad_leading(to_string(dt.month), 2, "0")}/#{String.pad_leading(to_string(dt.day), 2, "0")} #{String.pad_leading(to_string(dt.hour), 2, "0")}:#{String.pad_leading(to_string(dt.minute), 2, "0")}"
+
+      _ ->
+        iso8601
+    end
+  end
+
+  defp format_short_datetime(_), do: "—"
 
   @doc false
   def pip_class_for_test(i, current_step, total), do: pip_class(i, current_step, total)
