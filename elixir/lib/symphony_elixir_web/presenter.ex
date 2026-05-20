@@ -12,6 +12,7 @@ defmodule SymphonyElixirWeb.Presenter do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
         pending = Map.get(snapshot, :pending, [])
+        recent = Map.get(snapshot, :recent_sessions, [])
 
         %{
           generated_at: generated_at,
@@ -23,6 +24,7 @@ defmodule SymphonyElixirWeb.Presenter do
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           pending: Enum.map(pending, &pending_entry_payload/1),
+          recent_sessions: Enum.map(recent, &recent_session_payload/1),
           agent_totals: snapshot.agent_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -32,6 +34,7 @@ defmodule SymphonyElixirWeb.Presenter do
           generated_at: generated_at,
           counts: %{running: 0, retrying: 0, queued: 0},
           pending: [],
+          recent_sessions: [],
           error: %{code: "snapshot_timeout", message: "Snapshot timed out"}
         }
 
@@ -40,6 +43,7 @@ defmodule SymphonyElixirWeb.Presenter do
           generated_at: generated_at,
           counts: %{running: 0, retrying: 0, queued: 0},
           pending: [],
+          recent_sessions: [],
           error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}
         }
     end
@@ -150,6 +154,21 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       priority: entry.priority,
       url: entry.url
+    }
+  end
+
+  defp recent_session_payload(entry) do
+    %{
+      identifier: entry.identifier,
+      title: entry.title,
+      url: entry.url,
+      status: entry.status,
+      started_at: iso8601(entry.started_at),
+      finished_at: iso8601(entry.finished_at),
+      duration_seconds: entry.duration_seconds,
+      turn_count: entry.turn_count,
+      total_tokens: entry.total_tokens,
+      pr_url: entry.pr_url
     }
   end
 

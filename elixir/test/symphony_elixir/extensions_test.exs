@@ -370,6 +370,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                }
              ],
              "pending" => [],
+             "recent_sessions" => [],
              "agent_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -448,6 +449,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "generated_at" => state_payload["generated_at"],
                "counts" => %{"running" => 0, "retrying" => 0, "queued" => 0},
                "pending" => [],
+               "recent_sessions" => [],
                "error" => %{"code" => "snapshot_unavailable", "message" => "Snapshot unavailable"}
              }
 
@@ -472,6 +474,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "generated_at" => timeout_payload["generated_at"],
                "counts" => %{"running" => 0, "retrying" => 0, "queued" => 0},
                "pending" => [],
+               "recent_sessions" => [],
                "error" => %{"code" => "snapshot_timeout", "message" => "Snapshot timed out"}
              }
   end

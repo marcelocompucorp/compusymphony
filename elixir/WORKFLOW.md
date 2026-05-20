@@ -336,3 +336,13 @@ echo '{"step": N, "total": T, "label": "Step heading text"}' > .symphony-status.
 Where `N` is the current step number (1-based), `T` is the total number of steps, and `"Step heading text"` is the exact heading of that step. The atomic rename (write to `.tmp` then `mv`) prevents partial reads.
 
 This file is read by the Symphony dashboard to show real-time progress. It costs zero tokens.
+
+## PR URL reporting
+
+Immediately after `gh pr create` succeeds, write the PR URL to the workspace:
+
+```bash
+echo '<pr_url>' > .symphony-pr-url
+```
+
+Replace `<pr_url>` with the URL returned by `gh pr create` (e.g. `https://github.com/org/repo/pull/123`). This file is read by the Symphony dashboard to display a link in the Recent sessions table.
