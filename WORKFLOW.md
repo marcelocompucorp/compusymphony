@@ -793,7 +793,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    | Doc-only diff | Skip both phases. One-line `## Comments` note. Continue to 12c. |
    | anondb lookup returns `None` | Skip both phases. Note in `## Comments`. Continue to 12c. |
    | Phase A FAILURE / timeout / cap | Skip both phases. Note build # in `## Comments`. Use staging `before.png` from step 3b. Continue to 12c. |
-   | `assert_bug_reproduced` doesn't fire | **STOP.** Post Jira comment (URL tested, steps attempted, assertion did not fire). Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. Do NOT open PR. |
+   | `assert_bug_reproduced` doesn't fire | **STOP.** For sub-40px element bugs (icons, badges, narrow borders), retry once at `device_scale_factor=3` per `visual-repro.md` §9c BEFORE stopping. If §9c also fails: post Jira comment (URL tested, steps attempted, assertion did not fire even at 3× DPI). Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. Do NOT open PR. |
    | Phase B FAILURE / timeout / cap | Skip `after.png`. Note build # in `## Comments`. Continue to 12c. |
    | `assert_bug_fixed` fails on dev site | **Block PR.** `AGENT_DONE` with `blocked-verify` prefix. Jira blocker comment. |
 

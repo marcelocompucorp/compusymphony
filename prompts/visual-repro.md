@@ -489,7 +489,7 @@ with sync_playwright() as p:
     browser.close()
 ```
 
-**Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. (Matches WORKFLOW.md Phase A A5 gate.)
+**Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped. (Matches WORKFLOW.md Phase A A5 gate.)
 
 ### §9b — Phase B: after.png after release
 
@@ -613,11 +613,14 @@ with sync_playwright() as p:
 
 ```python
 def assert_bug_reproduced(page):
-    # Example: icon renders at the wrong Unicode glyph
+    # Example: icon renders at the wrong Unicode glyph.
+    # Convention: assert_bug_reproduced *passes* when the bug IS present
+    # (and raises when the page looks correct). Read the assert below as:
+    # "fail if the glyph IS correct (= no bug to reproduce)."
     content = page.locator(".field-name-field-icon .fa-plus").evaluate(
         "el => window.getComputedStyle(el, '::before').content"
     )
-    # Correct Font Awesome `+` glyph is U+F067. Any other value = bug.
+    # Correct Font Awesome `+` glyph is U+F067. Any other value = bug present.
     assert content != '"\\F067"', \
         f"Bug not reproduced: icon renders correct glyph ({content!r})"
 ```
@@ -743,7 +746,7 @@ with sync_playwright() as p:
 
 **Scope note:** video covers only the first `reproduce_after_state → assert_bug_fixed → screenshot` block. The logged-in regression check runs in a separate, non-recording context. This keeps the video focused on the interaction evidence and avoids 30+ second recordings that include login flows.
 
-**Cursor visibility:** Playwright's headless Chromium does not render the OS cursor in video recordings — synthetic mouse movements from `page.mouse.move()` and `page.click()` are invisible without the overlay. `add_init_script()` runs before every page navigation in the context, so the overlay persists across `page.goto()` calls within the same recording. The overlay is purely cosmetic — it has `pointer-events:none` and does not affect `page.locator()` selectors, assertions, or click routing.
+**Cursor visibility:** Playwright's headless Chromium does not render the OS cursor in video recordings — synthetic mouse movements from `page.mouse.move()` and `page.click()` are invisible without the overlay. `add_init_script()` runs before every page navigation in the context, so the overlay persists across `page.goto()` calls within the same recording. The overlay is purely cosmetic — it has `pointer-events:none` and does not affect `page.locator()` selectors, assertions, or click routing. **Caveat:** the overlay is re-injected only on full document loads. In-page SPA route changes (no new document) will not re-attach the dot — not a concern for Drupal 7 page loads, but worth knowing if the script is ever ported to a SPA framework.
 
 ### 10.3 Convert .webm → .gif
 
