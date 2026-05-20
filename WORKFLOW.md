@@ -759,6 +759,8 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    Before capturing, **re-evaluate the `visual-repro.md §10.1` gate**: is the bug's evidence a sequence of interactions — an animation completing, a counter updating, a dropdown closing, a state transition playing out? If yes, enable video recording for this Phase B context pass and convert to GIF per §10.3 (upload to S3 per §10.5). Specify what the GIF should show — e.g. for a carousel bug: slide animating while counter increments, indicator highlight moving, wrap-around from last to first slide. If the fix is purely CSS/static (colour, layout, spacing), skip video and take a static screenshot only.
 
+   **When a GIF is produced**, reference the S3 URL in the PR `## After` section in addition to `after.png`: `![After](https://<bucket>.s3.<region>.amazonaws.com/<TICKET>/after.gif)`. This replaces the static `after.png` inline image — the GIF conveys the same information and more. Still capture `after.png` as a workspace artifact (for the audit trail); only the GIF goes into the PR body.
+
    Run `visual-repro.md §9b`: `assert_bug_fixed` → capture `after.png`. Save to `<workspace>/after.png`. Per the v1.12 gitignore policy (step 10e), screenshots are workspace-only — do NOT commit to the repo.
 
    If `assert_bug_fixed` **fails** (assertion didn't fire): **BLOCK** the PR. Post a Jira blocker comment quoting (a) the reviewer's approval, (b) both Jenkins build numbers + dev-site URL, (c) the assertion failure, and (d) likely cause: "DB or data state may not reproduce the bug on the dev site." Leave `agent:todo` ON. Write `<workspace>/AGENT_DONE` with prefix `blocked-verify`. Skip 12c entirely.
@@ -804,7 +806,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Deduplication guard (mandatory).** Before posting, fetch the ticket's existing comments (`getJiraIssue` with `fields: ["comment"]`) and scan for any comment whose body already contains the PR URL you are about to post. If found, skip this step entirely — a duplicate comment causes confusion for reviewers and signals a workflow re-run. Log: "Jira comment skipped — PR URL already present in comment `<id>`."
 
-   **Format.** Always use ADF `inlineCard` nodes for GitHub URLs (PR links, branch links, dev-site URLs that are GitHub pages). Plain-text URLs do not render as smart link cards in Jira. Use `contentFormat: "adf"` and wrap each URL in:
+   **Format.** Always use ADF `inlineCard` nodes for all URLs in the comment — GitHub URLs (PR links, branch links) and dev-site URLs alike. Plain-text URLs do not render as smart link cards in Jira. Use `contentFormat: "adf"` and wrap each URL in:
    ```json
    { "type": "inlineCard", "attrs": { "url": "<URL>" } }
    ```
