@@ -88,15 +88,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Retrying</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">Issues waiting for the next retry window.</p>
-          </article>
-
-          <article class="metric-card">
             <p class="metric-label">Queued</p>
             <p class="metric-value numeric"><%= @payload.counts.queued %></p>
             <p class="metric-detail">Issues waiting for a free slot.</p>
+          </article>
+
+          <article class="metric-card">
+            <p class="metric-label">Retrying</p>
+            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
+            <p class="metric-detail">Issues waiting for the next retry window.</p>
           </article>
 
           <article class="metric-card">
