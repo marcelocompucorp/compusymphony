@@ -58,6 +58,7 @@ defmodule SymphonyElixir.Orchestrator do
       max_concurrent_agents: Config.max_concurrent_agents(),
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
+      recent_sessions: load_recent_sessions_from_disk(),
       agent_totals: @empty_agent_totals,
       agent_rate_limits: nil
     }
@@ -468,6 +469,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp record_recent_session(%State{} = state, running_entry) do
     session = capture_session_data(running_entry)
+    persist_session_meta(session)
     recent = [session | state.recent_sessions] |> Enum.take(@max_recent_sessions)
     %{state | recent_sessions: recent}
   end
@@ -515,6 +517,90 @@ defmodule SymphonyElixir.Orchestrator do
       pr_url: pr_url
     }
   end
+
+  defp persist_session_meta(%{identifier: identifier} = session) when is_binary(identifier) do
+    root = Config.workspace_root()
+    path = Path.join([root, identifier, ".symphony-session-meta"])
+
+    payload = %{
+      identifier: session.identifier,
+      title: session.title,
+      url: session.url,
+      status: session.status,
+      started_at: dt_to_iso8601(session.started_at),
+      finished_at: dt_to_iso8601(session.finished_at),
+      duration_seconds: session.duration_seconds,
+      turn_count: session.turn_count,
+      total_tokens: session.total_tokens,
+      pr_url: session.pr_url
+    }
+
+    case Jason.encode(payload) do
+      {:ok, json} -> File.write(path, json)
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp persist_session_meta(_session), do: :ok
+
+  defp dt_to_iso8601(%DateTime{} = dt), do: dt |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  defp dt_to_iso8601(_), do: nil
+
+  defp load_recent_sessions_from_disk do
+    root = Config.workspace_root()
+
+    case File.ls(root) do
+      {:ok, dirs} ->
+        dirs
+        |> Enum.flat_map(fn dir ->
+          path = Path.join([root, dir, ".symphony-session-meta"])
+
+          with {:ok, content} <- File.read(path),
+               {:ok, data} <- Jason.decode(content),
+               %{} = session <- parse_session_meta(data),
+               %DateTime{} <- session.finished_at do
+            [session]
+          else
+            _ -> []
+          end
+        end)
+        |> Enum.sort_by(& &1.finished_at, {:desc, DateTime})
+        |> Enum.take(@max_recent_sessions)
+
+      _ ->
+        []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp parse_session_meta(data) when is_map(data) do
+    %{
+      identifier: Map.get(data, "identifier"),
+      title: Map.get(data, "title"),
+      url: Map.get(data, "url"),
+      status: Map.get(data, "status"),
+      started_at: parse_dt(Map.get(data, "started_at")),
+      finished_at: parse_dt(Map.get(data, "finished_at")),
+      duration_seconds: Map.get(data, "duration_seconds"),
+      turn_count: Map.get(data, "turn_count"),
+      total_tokens: Map.get(data, "total_tokens"),
+      pr_url: Map.get(data, "pr_url")
+    }
+  end
+
+  defp parse_dt(nil), do: nil
+
+  defp parse_dt(s) when is_binary(s) do
+    case DateTime.from_iso8601(s) do
+      {:ok, dt, _} -> dt
+      _ -> nil
+    end
+  end
+
+  defp parse_dt(_), do: nil
 
   defp choose_issues(sorted_issues, state) do
     active_states = active_state_set()
