@@ -648,16 +648,22 @@ with sync_playwright() as p:
 
 GitHub embeds external GIFs inline (proxied via `camo.githubusercontent.com`) but blocks external `<video>` sources via CSP. GIF is therefore the correct output format for PR embedding from a server environment with only a PAT — no browser session required.
 
+**Size limit:** GitHub's camo proxy does not render GIFs larger than ~5 MB — they silently fail to display in the PR body. Keep output under 3 MB to be safe. The parameters below (fps=5, scale=700, max_colors=128, bayer dithering) produce ~1–2 MB for a typical 7–10 second recording. If the recording is longer or the scene is high-motion, reduce fps to 4 or scale to 600 and re-check the output size before uploading.
+
 ```python
 # Gate: only convert if ffmpeg is available
 if shutil.which("ffmpeg") is None:
     print("ffmpeg not found — keeping after.webm, skipping gif conversion.")
 else:
-    # Two-pass palette GIF: much better colour quality than single-pass
+    # Two-pass palette GIF optimised for GitHub's ~5 MB camo proxy limit.
+    # fps=5 + scale=700 + max_colors=128 + bayer dithering keeps output
+    # under 2 MB for a typical 7-10 s recording while remaining legible.
     result = subprocess.run(
         [
             "ffmpeg", "-y", "-i", "after.webm",
-            "-vf", "fps=8,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+            "-vf",
+            "fps=5,scale=700:-1:flags=lanczos,split[s0][s1];"
+            "[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer",
             "-loop", "0",
             "after.gif",
         ],
@@ -667,10 +673,14 @@ else:
         print(f"ffmpeg gif conversion failed:\n{result.stderr.decode()}")
         # after.webm is still available as fallback
     else:
+        size_mb = pathlib.Path("after.gif").stat().st_size / 1_048_576
+        if size_mb > 3:
+            print(f"WARNING: after.gif is {size_mb:.1f} MB — may not render in GitHub. "
+                  "Consider reducing fps to 4 or scale to 600 and rerunning.")
         pathlib.Path("after.webm").unlink(missing_ok=True)  # clean up source
 ```
 
-`-movflags +faststart` allows streaming before full download. `-y` overwrites existing output. `-c:a aac` is safe even if the source has no audio track (Playwright records silent video).
+`-loop 0` produces an infinitely looping GIF. `-y` overwrites existing output.
 
 ### 10.4 Artifact policy (workspace-only for source files)
 
