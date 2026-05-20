@@ -412,6 +412,17 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    This confirmation catches two related failure modes: **(a) the IESBUILD-247 case** — agent writes a per-site click-away handler (`menu-click-away.js`) for popup elements whose toggle is managed by `compu_bs5/includes/menu.inc`, passing check 1 by noting that `nested-dropdown.js` handles main-nav (not popups) — but failing 1b because `#cw-login-menu-popup-container` is a direct `.toggle()` target in `menu.inc`; **(b) the simpler duplication case** — agent writes a per-site handler that replicates an existing upstream handler verbatim.
 
+   **Coordinator behavior gate (universal — applies before writing any new behavior, regardless of bug classification).**
+
+   A *coordinator* is any new `Drupal.behaviors.*` implementation or document-level jQuery handler whose primary effect is to close, hide, collapse, or otherwise manage DOM elements whose **interactive lifecycle** (open/close/toggle) is already owned by another behavior or by inline JS in a PHP template function. Coordinators add a second controller on top of a broken first controller — they mask the root cause and break again when the first controller is later fixed.
+
+   **Before writing any new behavior, answer:** who OWNS the open/close/toggle lifecycle of the affected DOM elements? The owner is the `Drupal.behaviors.*` implementation or PHP template function that creates, initializes, and binds the interaction for that element. Then:
+
+   - **Owner is in `./repo-client/profiles/compuclient/...`** → the fix is **upstream-rooted** regardless of where your new behavior would live. Re-classify. Restart from step 5 with the dual-clone setup. Fix the owner in the upstream repo — do NOT write a coordinator in the client repo.
+   - **Owner is in `./repo-client/sites/all/themes/custom/<site>/` or client modules** → edit the owner directly. A focused fix inside the owning behavior is always preferable to a new coordinator.
+
+   **The IESBUILD-247 failure** is the canonical example: `menu-click-away.js` (a coordinator that calls `.hide()` on `#cw-login-menu-popup-container`) was written when `compu_bs5/includes/menu.inc` owns the popup toggle via `jQuery(document).ready() + .toggle()`. Correct fix: convert `menu.inc`'s popup code from raw `document.ready + .toggle()` to a `Drupal.behaviors.*` with its own click-away handler — an upstream PR against `compucorp/compu_bs5`. The `menu.inc` owner is in `profiles/compuclient/themes/contrib/compu_bs5/`, so this is upstream-rooted.
+
    **Follow-up commit selector discipline.** The grep checks above apply to the initial implementation. They also apply to any follow-up commit that adds a new CSS selector to an existing event binding (e.g. extending a behavior to cover an additional paragraph bundle or component variant). Before adding any new selector — even in a small follow-up commit — confirm it matches at least one DOM element by grepping the repo's templates (`*.tpl.php`, `*.html.twig`, theme hook suggestion files, and `*.module` theme function calls). A selector that matches nothing is dead code and will be flagged by the reviewer. Example failure: IESBUILD-232 — agent extended `.paragraphs-item-cw-carousel` to also cover `.paragraphs-item-cw-carousel-parallax` without verifying the parallax class exists; the parallax variant is rendered via a `theme_hook_suggestion` that swaps the `.tpl.php` but keeps the same bundle wrapper class — the extra selector was dead code, caught in reviewer round 2, and reverted.
 
 8. **Implement with `superpowers:test-driven-development`.** Write a failing test that captures the bug. Make it pass with the smallest reasonable change.
@@ -490,7 +501,9 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
     If `after.png` was captured (§8 CSS-only or 12b-bis Phase B), PR `## After` references the dev-site URL or notes the workspace capture.
 
-    If exit non-zero OR `before.png` missing: PR body gets `## Manual verification required` with explicit reproduction steps (URL, preconditions, what to look for).
+    **Reproduction gate.** If exit non-zero OR `before.png` missing AND the two-condition gate at the top of step 10 was met (staging URL resolvable + host passes `assert_staging_host`): **STOP.** Do NOT proceed to step 11 or 12. Before stopping, try the small-element fallback: if the bug description references an icon, badge, narrow button, or any element below ~40px, re-run with `device_scale_factor=3` as described in `prompts/visual-repro.md` §9c. If §9c reproduces the bug, continue normally. If §9c also fails to fire `assert_bug_reproduced`: post a Jira comment via the Atlassian MCP explaining (a) the URL tested, (b) the reproduction steps attempted, (c) that `assert_bug_reproduced` did not fire even at 3× DPI. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`.
+
+    If the gate at the top of step 10 was NOT met (no staging URL resolvable, or host did not pass `assert_staging_host`): document in PR `## Comments` ("Visual repro skipped: <reason>") and proceed with `## Manual verification required` in the PR body.
 
     10f. **Artifact lifecycle note (v1.12+):** Screenshots stay in the workspace and the JSONL transcript — they do NOT enter the client repo's git history. This avoids accumulating ~1–2 MB of CI tooling artifacts per ticket in client repo history (per Compucorp's engineering feedback on PR #229). If the team later wants permanent storage with public URLs, the correct solution is an S3/Cloudflare R2 bucket accessible to the bot PAT — that is the v2 path.
 
@@ -670,7 +683,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    Run `visual-repro.md §9a`: reproduce the bug → `assert_bug_reproduced` → capture `before.png`. Save to `<workspace>/before.png` and copy to `repo/.agent-artifacts/{{ issue.identifier }}/before.png`. Commit on the agent branch (second commit after the fix commit — intentional append post-approval).
 
-   If `assert_bug_reproduced` does **not** fire (file-system-only or SSP-specific bug that has no observable surface on the dev site): log a warning, fall back to the staging `before.png` already captured in step 3b, continue to Phase B regardless.
+   **Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire on the dev site after the broken tag was deployed. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped.
 
    **A6. Clean up the before tag:**
    ```bash
@@ -780,7 +793,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    | Doc-only diff | Skip both phases. One-line `## Comments` note. Continue to 12c. |
    | anondb lookup returns `None` | Skip both phases. Note in `## Comments`. Continue to 12c. |
    | Phase A FAILURE / timeout / cap | Skip both phases. Note build # in `## Comments`. Use staging `before.png` from step 3b. Continue to 12c. |
-   | `assert_bug_reproduced` doesn't fire | Log warning. Use staging `before.png`. Continue to Phase B. |
+   | `assert_bug_reproduced` doesn't fire | **STOP.** Post Jira comment (URL tested, steps attempted, assertion did not fire). Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. Do NOT open PR. |
    | Phase B FAILURE / timeout / cap | Skip `after.png`. Note build # in `## Comments`. Continue to 12c. |
    | `assert_bug_fixed` fails on dev site | **Block PR.** `AGENT_DONE` with `blocked-verify` prefix. Jira blocker comment. |
 

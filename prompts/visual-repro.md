@@ -489,7 +489,7 @@ with sync_playwright() as p:
     browser.close()
 ```
 
-If `assert_bug_reproduced` does **not** fire: log a warning, fall back to the staging `before.png` already captured in WORKFLOW.md step 10, and continue to Phase B regardless. The dev-site before.png is preferred but not required.
+**Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. (Matches WORKFLOW.md Phase A A5 gate.)
 
 ### §9b — Phase B: after.png after release
 
@@ -548,12 +548,83 @@ Same as §8: a Playwright assertion that fires when the bug is GONE. For non-DOM
 
 | §9 failure | 12b-bis disposition |
 |---|---|
-| §9a: `assert_bug_reproduced` doesn't fire | Log warning, use staging `before.png`, continue to Phase B. |
+| §9a: `assert_bug_reproduced` doesn't fire | **STOP.** Post Jira comment (URL tested, steps attempted, assertion did not fire). Set `AGENT_DONE = blocked-verify`. Do NOT open PR. |
 | §9b: `assert_bug_fixed` doesn't fire | **BLOCK** — `blocked-verify`, no PR. |
 | Playwright timeout / unreachable (either phase) | Continue to 12c with `## Comments` note. |
 | Drupal login fails (`get_devsite_drupal_admin_creds` fallback tried, still rejected) | Continue to 12c with `## Comments` note. Operator must inspect creds. |
 | Logged-in regression check fails (`assert_bug_fixed` fires anonymous but not logged-in) | **BLOCK** — `blocked-verify`. The fix breaks the authenticated user flow. |
 | `assert_staging_host` rejects the host | Defensive: should never happen (Jenkins only produces `*.cc-test.site`). If it does, treat as Jenkins console parse failure — continue to 12c with `## Comments` note. |
+
+### §9c — Small-element screenshots (device_scale_factor=3)
+
+When the bug manifests on an element rendered below ~40px in either dimension (icon, badge, narrow counter, thin border), a full-page screenshot at default 1× DPI cannot resolve sub-pixel artifacts. Use a 3× HiDPI context with a tight element clip.
+
+**When to use this:** icon rendering glitch (e.g. IESBUILD-229: FAQ expand `+` icon shows a `\` diagonal artifact at ~12px rendered size), wrong icon glyph, missing icon state, small badge, thin border inconsistency. Any bug where the artifact is smaller than ~5px at 1× DPI.
+
+**Pattern A — element_handle.screenshot() (preferred for isolated element):**
+
+```python
+from playwright.sync_api import sync_playwright
+from repro_helpers import assert_staging_host, dismiss_cookie_banner, DEFAULT_VIEWPORT
+
+STAGING_URL = "https://<staging-host>"
+assert_staging_host(STAGING_URL)
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    ctx = browser.new_context(
+        viewport=DEFAULT_VIEWPORT,
+        device_scale_factor=3,   # 3× physical pixels per CSS pixel
+    )
+    page = ctx.new_page()
+    page.goto(f"{STAGING_URL}/<bug-page-path>")
+    dismiss_cookie_banner(page)
+    reproduce(page)   # navigate to the element state where the bug is visible
+
+    el = page.locator("<css-selector-for-small-element>").first
+    el.wait_for(state="visible")
+
+    assert_bug_reproduced(page)   # must fire before screenshot
+
+    # Output is (element_width × 3) × (element_height × 3) physical px
+    el.screenshot(path="before.png")
+
+    ctx.close()
+    browser.close()
+```
+
+**Pattern B — tight page clip (when surrounding context is needed):**
+
+```python
+    box = el.bounding_box()    # CSS-pixel coordinates on the logical page
+    PADDING = 10               # extra CSS px on each side
+    page.screenshot(
+        path="before.png",
+        clip={
+            "x": max(0, box["x"] - PADDING),
+            "y": max(0, box["y"] - PADDING),
+            "width": box["width"] + 2 * PADDING,
+            "height": box["height"] + 2 * PADDING,
+        },
+    )
+```
+
+**Writing assert_bug_reproduced for rendering bugs:** use a computed-style assertion where possible:
+
+```python
+def assert_bug_reproduced(page):
+    # Example: icon renders at the wrong Unicode glyph
+    content = page.locator(".field-name-field-icon .fa-plus").evaluate(
+        "el => window.getComputedStyle(el, '::before').content"
+    )
+    # Correct Font Awesome `+` glyph is U+F067. Any other value = bug.
+    assert content != '"\\F067"', \
+        f"Bug not reproduced: icon renders correct glyph ({content!r})"
+```
+
+If no computed-style or accessibility assertion is available (purely visual artifact with no DOM property difference), capture at 3× and note in PR `## Before`: _"Screenshot captured at device_scale_factor=3 to reveal sub-pixel artifact. No programmatic DOM assertion available — element screenshot is the reproduction evidence."_ This is acceptable for rendering glitches where the artifact has no measurable DOM signal.
+
+**Reproduction gate integration:** If the standard 1× repro fails and the bug description references a small UI element, try §9c before triggering the STOP. If §9c's `assert_bug_reproduced` fires, continue normally. If §9c also fails, STOP per the reproduction gate.
 
 ## 10. Video recording for interactive-behavior bugs (§9b extension)
 
@@ -614,6 +685,34 @@ with sync_playwright() as p:
 
     ctx = browser.new_context(**ctx_kwargs)
     page = ctx.new_page()
+
+    # Cursor overlay — makes mouse position visible in video recordings.
+    # Playwright's headless Chromium does not render the OS cursor in .webm output.
+    # This overlay tracks synthetic mousemove events and renders a red dot at the
+    # cursor position. add_init_script() runs before every navigation in the context.
+    page.add_init_script("""
+        (() => {
+            const dot = document.createElement('div');
+            dot.style.cssText = (
+                'position:fixed;top:0;left:0;width:20px;height:20px;' +
+                'border-radius:50%;background:rgba(220,50,50,0.75);' +
+                'box-shadow:0 0 0 3px rgba(255,255,255,0.85);' +
+                'z-index:2147483647;pointer-events:none;' +
+                'transform:translate(-50%,-50%);'
+            );
+            const attach = () => { if (document.body) document.body.appendChild(dot); };
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', attach);
+            } else {
+                attach();
+            }
+            document.addEventListener('mousemove', e => {
+                dot.style.left = e.clientX + 'px';
+                dot.style.top = e.clientY + 'px';
+            }, { passive: true });
+        })();
+    """)
+
     page.goto(f"{DEVSITE_URL}/<bug-page-path>")
     dismiss_cookie_banner(page)
     compucorp_drupal_login_autodetect(page, admin_user, admin_pass, site=DEVSITE_URL)
@@ -643,6 +742,8 @@ with sync_playwright() as p:
 ```
 
 **Scope note:** video covers only the first `reproduce_after_state → assert_bug_fixed → screenshot` block. The logged-in regression check runs in a separate, non-recording context. This keeps the video focused on the interaction evidence and avoids 30+ second recordings that include login flows.
+
+**Cursor visibility:** Playwright's headless Chromium does not render the OS cursor in video recordings — synthetic mouse movements from `page.mouse.move()` and `page.click()` are invisible without the overlay. `add_init_script()` runs before every page navigation in the context, so the overlay persists across `page.goto()` calls within the same recording. The overlay is purely cosmetic — it has `pointer-events:none` and does not affect `page.locator()` selectors, assertions, or click routing.
 
 ### 10.3 Convert .webm → .gif
 

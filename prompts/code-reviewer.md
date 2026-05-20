@@ -130,6 +130,7 @@ For Drupal 7 + CiviCRM code specifically:
   called for AJAX-loaded content (the guard fires only once globally, not once
   per context). Exception: when `context` is always `document` by design and
   the handler is document-level — document the reasoning.
+- **Coordinator behavior (BLOCKER):** A coordinator is any new `Drupal.behaviors.*` implementation (or document-level jQuery handler) whose primary effect is to close, hide, show, or otherwise manage DOM elements whose interactive lifecycle (open/close/toggle) is owned by another component — e.g., a behavior that calls `.hide()` or `.toggle()` on popup elements that `compu_bs5/includes/menu.inc` opens. Coordinators are a **BLOCKER** regardless of classification. State in the finding: (a) which selector/element the coordinator manages, (b) which file actually owns that element's lifecycle, (c) what the correct fix is (fix the owner directly; if the owner is in `profiles/compuclient/...`, the bug should have been classified upstream-rooted — cross-reference §5a). The canonical failure is IESBUILD-247 PR #229: `menu-click-away.js` coordinating popup elements owned by `compu_bs5/includes/menu.inc`.
 
 ### 5. Code standards (Compucorp shared-development-guide.md)
 
