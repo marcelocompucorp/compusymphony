@@ -366,7 +366,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <th>Issue</th>
                     <th>Title</th>
                     <th>Status</th>
-                    <th>Finished</th>
+                    <th>Started</th>
                     <th>Duration</th>
                     <th>Turns</th>
                     <th>Tokens</th>
@@ -397,7 +397,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <span class="muted">—</span>
                       <% end %>
                     </td>
-                    <td class="mono numeric"><%= format_short_datetime(entry.finished_at) %></td>
+                    <td class="mono numeric"><%= format_short_datetime(entry.started_at) %></td>
                     <td class="numeric">
                       <%= if entry.duration_seconds do %>
                         <%= format_runtime_seconds(entry.duration_seconds) %>
