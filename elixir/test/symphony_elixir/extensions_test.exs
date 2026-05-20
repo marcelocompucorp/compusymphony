@@ -344,7 +344,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
+             "counts" => %{"running" => 1, "retrying" => 1, "queued" => 0},
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -356,7 +356,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "step_info" => nil
                }
              ],
              "retrying" => [
@@ -368,6 +369,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "error" => "boom"
                }
              ],
+             "pending" => [],
              "agent_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -444,6 +446,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload ==
              %{
                "generated_at" => state_payload["generated_at"],
+               "counts" => %{"running" => 0, "retrying" => 0, "queued" => 0},
+               "pending" => [],
                "error" => %{"code" => "snapshot_unavailable", "message" => "Snapshot unavailable"}
              }
 
@@ -466,6 +470,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert timeout_payload ==
              %{
                "generated_at" => timeout_payload["generated_at"],
+               "counts" => %{"running" => 0, "retrying" => 0, "queued" => 0},
+               "pending" => [],
                "error" => %{"code" => "snapshot_timeout", "message" => "Snapshot timed out"}
              }
   end
@@ -540,7 +546,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
-    assert html =~ "Agent update"
+    assert html =~ "Activity"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -634,7 +640,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "queued" => 0}
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200

@@ -324,3 +324,15 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 
 - <only include when something was confusing during execution>
 ````
+
+## Step reporting
+
+At the start of **each numbered step**, before doing any work for that step, write the following file to the workspace root:
+
+```bash
+echo '{"step": N, "total": T, "label": "Step heading text"}' > .symphony-status.tmp && mv .symphony-status.tmp .symphony-status
+```
+
+Where `N` is the current step number (1-based), `T` is the total number of steps, and `"Step heading text"` is the exact heading of that step. The atomic rename (write to `.tmp` then `mv`) prevents partial reads.
+
+This file is read by the Symphony dashboard to show real-time progress. It costs zero tokens.

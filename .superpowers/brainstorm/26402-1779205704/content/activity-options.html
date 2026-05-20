@@ -1,0 +1,168 @@
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f7; margin: 0; padding: 0; color: #1d1d1f; }
+  .shell { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem; }
+  h2 { font-size: 1.25rem; font-weight: 700; margin: 0 0 .3rem; }
+  .sub { color: #86868b; font-size: .85rem; margin: 0 0 1.5rem; }
+
+  .options { display: flex; flex-direction: column; gap: 1rem; }
+  .option { background: white; border-radius: 14px; border: 2px solid transparent; padding: 1.25rem 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,.07); cursor: pointer; transition: border-color .15s; }
+  .option:hover { border-color: #93c5fd; }
+  .option.selected { border-color: #3b82f6; }
+  .option-header { display: flex; align-items: center; gap: .75rem; margin-bottom: .75rem; }
+  .letter { width: 28px; height: 28px; border-radius: 8px; background: #f0f0f5; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .8rem; color: #6e6e73; flex-shrink: 0; }
+  .option.selected .letter { background: #3b82f6; color: white; }
+  .option-title { font-weight: 700; font-size: .95rem; }
+  .option-desc { font-size: .78rem; color: #6e6e73; margin: 0 0 1rem .5rem; padding-left: 2.25rem; }
+  .effort { font-size: .68rem; font-weight: 600; padding: .2rem .5rem; border-radius: 6px; margin-left: auto; }
+  .effort-none { background: #dcfce7; color: #166534; }
+  .effort-low  { background: #dbeafe; color: #1d4ed8; }
+  .effort-med  { background: #fef9c3; color: #854d0e; }
+
+  /* Mockup cell */
+  .cell-mock { background: #f9f9fb; border-radius: 8px; padding: .85rem 1rem; margin: 0 0 0 2.7rem; }
+
+  /* Option A: phase */
+  .phase-row { display: flex; align-items: center; gap: .5rem; }
+  .phase-badge { font-size: .72rem; font-weight: 600; padding: .25rem .6rem; border-radius: 20px; }
+  .phase-impl { background: #dbeafe; color: #1d4ed8; }
+  .phase-test { background: #d1fae5; color: #065f46; }
+  .phase-pr   { background: #ede9fe; color: #4c1d95; }
+  .phase-setup{ background: #fef3c7; color: #92400e; }
+  .phase-arrow { color: #c0c0c8; font-size: .8rem; }
+
+  /* Option B: workflow step */
+  .step-row { display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; }
+  .step-badge { font-size: .78rem; font-weight: 700; background: #1d1d1f; color: white; padding: .2rem .55rem; border-radius: 6px; white-space: nowrap; }
+  .step-label { font-size: .82rem; font-weight: 600; }
+  .step-sub { font-size: .72rem; color: #86868b; padding-left: 0; }
+  .step-progress { display: flex; gap: 3px; margin-top: .5rem; }
+  .step-pip { height: 4px; border-radius: 2px; flex: 1; background: #e5e7eb; }
+  .step-pip.done { background: #3b82f6; }
+  .step-pip.active { background: #93c5fd; }
+
+  /* Option C: todo task */
+  .todo-row { display: flex; align-items: flex-start; gap: .5rem; }
+  .todo-icon { font-size: .9rem; margin-top: 1px; }
+  .todo-text { font-size: .82rem; font-weight: 600; color: #1d1d1f; line-height: 1.3; }
+  .todo-sub  { font-size: .72rem; color: #86868b; margin-top: .2rem; }
+  .todo-progress { font-size: .7rem; color: #6e6e73; background: #f0f0f5; padding: .15rem .45rem; border-radius: 4px; display: inline-block; margin-top: .3rem; }
+
+  /* Option D: unchanged */
+  .raw-item { font-size: .78rem; color: #86868b; display: flex; align-items: baseline; gap: .4rem; margin-bottom: .2rem; }
+  .raw-dot { width: 5px; height: 5px; border-radius: 50%; background: #c0c0c8; flex-shrink: 0; margin-top: 3px; }
+
+  .trade { display: flex; gap: 1.5rem; margin-top: .75rem; padding-top: .75rem; border-top: 1px solid #f0f0f5; margin-left: 2.7rem; }
+  .trade-col { flex: 1; }
+  .trade-label { font-size: .65rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: #86868b; margin-bottom: .3rem; }
+  .trade-item { font-size: .75rem; color: #3a3a3c; margin-bottom: .2rem; }
+  .trade-item::before { content: '+ '; color: #22c55e; font-weight: 700; }
+  .trade-con::before { content: '− '; color: #ef4444; font-weight: 700; }
+</style>
+
+<div class="shell">
+  <h2>What should the "Activity" cell show?</h2>
+  <p class="sub">Each option has different tradeoffs between richness of info and implementation effort. Select the one that matches what you'd want to see when an agent is running.</p>
+
+  <div class="options">
+
+    <!-- A: Phase inference -->
+    <div class="option" data-choice="a" onclick="toggleSelect(this)">
+      <div class="option-header">
+        <div class="letter">A</div>
+        <span class="option-title">Phase inference — infer stage from tool patterns</span>
+        <span class="effort effort-none">No agent changes</span>
+      </div>
+      <p class="option-desc">Map sequences of tool calls to ~5 meaningful phases. "Exploring codebase", "Implementing", "Testing", "Creating PR".</p>
+      <div class="cell-mock">
+        <div class="phase-row">
+          <span class="phase-badge phase-impl">⚙ Implementing</span>
+          <span class="phase-arrow">→</span>
+          <span style="font-size:.75rem;color:#6e6e73">previously: Exploring codebase</span>
+        </div>
+        <div style="font-size:.72rem;color:#a0a0a8;margin-top:.4rem">Last activity 4s ago · 4 turns</div>
+      </div>
+      <div class="trade">
+        <div class="trade-col">
+          <div class="trade-label">Pros</div>
+          <div class="trade-item">Zero token cost, no agent changes</div>
+          <div class="trade-item">Works today with existing events</div>
+        </div>
+        <div class="trade-col">
+          <div class="trade-label">Cons</div>
+          <div class="trade-item trade-con">Phase labels can be wrong / misleading</div>
+          <div class="trade-item trade-con">Still doesn't tell you which step in WORKFLOW.md</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- B: Workflow step from status file -->
+    <div class="option" data-choice="b" onclick="toggleSelect(this)">
+      <div class="option-header">
+        <div class="letter">B</div>
+        <span class="option-title">Workflow step — agent writes current step to a file</span>
+        <span class="effort effort-low">Small WORKFLOW.md change</span>
+      </div>
+      <p class="option-desc">Add one line to WORKFLOW.md asking the agent to write its current step number to <code style="font-size:.75rem;background:#f0f0f5;padding:.1rem .3rem;border-radius:3px">.symphony-status</code> in the workspace. Symphony reads it on each refresh. Zero token cost.</p>
+      <div class="cell-mock">
+        <div class="step-row">
+          <span class="step-badge">Step 7 / 12</span>
+          <span class="step-label">Run tests and verify</span>
+        </div>
+        <div class="step-progress">
+          <div class="step-pip done"></div><div class="step-pip done"></div><div class="step-pip done"></div>
+          <div class="step-pip done"></div><div class="step-pip done"></div><div class="step-pip done"></div>
+          <div class="step-pip active"></div><div class="step-pip"></div><div class="step-pip"></div>
+          <div class="step-pip"></div><div class="step-pip"></div><div class="step-pip"></div>
+        </div>
+        <div style="font-size:.72rem;color:#a0a0a8;margin-top:.45rem">Last update 4s ago · 4 turns</div>
+      </div>
+      <div class="trade">
+        <div class="trade-col">
+          <div class="trade-label">Pros</div>
+          <div class="trade-item">Accurate — agent reports its own state</div>
+          <div class="trade-item">No extra API calls or tokens</div>
+          <div class="trade-item">Progress bar makes completion visible at a glance</div>
+        </div>
+        <div class="trade-col">
+          <div class="trade-label">Cons</div>
+          <div class="trade-item trade-con">Requires one-line addition to WORKFLOW.md</div>
+          <div class="trade-item trade-con">Agent must write the file (could forget / skip)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- C: Claude Code task list -->
+    <div class="option" data-choice="c" onclick="toggleSelect(this)">
+      <div class="option-header">
+        <div class="letter">C</div>
+        <span class="option-title">Active todo item — read agent's internal task list</span>
+        <span class="effort effort-med">Backend work needed</span>
+      </div>
+      <p class="option-desc">Parse Claude Code's TaskCreate/TaskUpdate tool calls from the event stream to extract the currently in-progress todo item.</p>
+      <div class="cell-mock">
+        <div class="todo-row">
+          <span class="todo-icon">⏳</span>
+          <div>
+            <div class="todo-text">Write unit tests for the new endpoint</div>
+            <div class="todo-sub">Active task · started 2m ago</div>
+            <span class="todo-progress">3 of 8 tasks done</span>
+          </div>
+        </div>
+      </div>
+      <div class="trade">
+        <div class="trade-col">
+          <div class="trade-label">Pros</div>
+          <div class="trade-item">Very meaningful — matches what the agent thinks it's doing</div>
+          <div class="trade-item">No agent-side changes needed</div>
+        </div>
+        <div class="trade-col">
+          <div class="trade-label">Cons</div>
+          <div class="trade-item trade-con">Tool call event format needs investigation</div>
+          <div class="trade-item trade-con">Agent doesn't always use TaskCreate</div>
+          <div class="trade-item trade-con">More backend parsing work</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>

@@ -34,6 +34,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      pending: [],
       agent_totals: nil,
       agent_rate_limits: nil
     ]
@@ -147,7 +148,10 @@ defmodule SymphonyElixir.Orchestrator do
               # Preflight refused: an `agent/*-fix` branch with unpushed
               # commits exists. Cleaning would lose work. Halt without
               # retry; operator must inspect/recover/clean manually.
-              Logger.warning("Orphan agent branch for issue_id=#{issue_id}; skipping retry. workspace=#{workspace} branch=#{branch}. Operator: recover or delete the workspace before re-applying agent:todo.")
+              Logger.warning(
+                "Orphan agent branch for issue_id=#{issue_id}; skipping retry. workspace=#{workspace} branch=#{branch}. Operator: recover or delete the workspace before re-applying agent:todo."
+              )
+
               complete_issue(state, issue_id)
 
             _ ->
@@ -227,11 +231,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
+    state = %{state | pending: []}
 
     with :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
-         true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+         {:ok, issues} <- Tracker.fetch_candidate_issues() do
+      sorted = sort_issues_for_dispatch(issues)
+
+      final_state =
+        if available_slots(state) > 0 do
+          choose_issues(sorted, state)
+        else
+          state
+        end
+
+      %{final_state | pending: compute_pending(sorted, final_state)}
     else
       {:error, reason} when is_binary(reason) ->
         Logger.error(reason)
@@ -241,7 +254,8 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
 
-      false ->
+      other ->
+        Logger.error("Unexpected result in maybe_dispatch: #{inspect(other)}")
         state
     end
   end
@@ -448,13 +462,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminate_task(_pid), do: :ok
 
-  defp choose_issues(issues, state) do
+  defp choose_issues(sorted_issues, state) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
 
-    issues
-    |> sort_issues_for_dispatch()
-    |> Enum.reduce(state, fn issue, state_acc ->
+    Enum.reduce(sorted_issues, state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
         dispatch_issue(state_acc, issue)
       else
@@ -475,6 +487,22 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp priority_rank(priority) when is_integer(priority) and priority in 1..4, do: priority
   defp priority_rank(_priority), do: 5
+
+  defp compute_pending(sorted_issues, %State{} = state) do
+    active_states = active_state_set()
+    terminal_states = terminal_state_set()
+
+    Enum.filter(sorted_issues, fn issue ->
+      candidate_issue?(issue, active_states, terminal_states) and
+        !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+        !MapSet.member?(state.claimed, issue.id) and
+        !Map.has_key?(state.running, issue.id)
+    end)
+  end
+
+  @doc false
+  @spec compute_pending_for_test([Issue.t()], State.t()) :: [Issue.t()]
+  def compute_pending_for_test(issues, state), do: compute_pending(issues, state)
 
   defp issue_created_at_sort_key(%Issue{created_at: %DateTime{} = created_at}) do
     DateTime.to_unix(created_at, :microsecond)
@@ -965,10 +993,23 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    pending =
+      Enum.map(state.pending, fn issue ->
+        %{
+          issue_id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          state: issue.state,
+          priority: issue.priority,
+          url: issue.url
+        }
+      end)
+
     {:reply,
      %{
        running: running,
        retrying: retrying,
+       pending: pending,
        agent_totals: state.agent_totals,
        rate_limits: Map.get(state, :agent_rate_limits),
        polling: %{

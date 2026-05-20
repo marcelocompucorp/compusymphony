@@ -1736,6 +1736,7 @@ defmodule SymphonyElixir.CoreTest do
   defp touch_timestamp(seconds_ago) do
     # macOS BSD touch -t expects [[CC]YY]MMDDhhmm[.SS]
     seconds = System.os_time(:second) - seconds_ago
+
     seconds
     |> DateTime.from_unix!()
     |> Calendar.strftime("%Y%m%d%H%M.%S")

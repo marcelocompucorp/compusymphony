@@ -1544,6 +1544,55 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert StatusDashboard.humanize_codex_message(fallback_reasoning) == "reasoning update"
   end
 
+  describe "compute_pending/2" do
+    test "returns issues that are not running, not claimed, not blocked, and pass candidate checks" do
+      issue_a = %Issue{id: "a", identifier: "MT-10", title: "A", state: "Todo", assigned_to_worker: true}
+      issue_b = %Issue{id: "b", identifier: "MT-11", title: "B", state: "Todo", assigned_to_worker: true}
+      issue_c = %Issue{id: "c", identifier: "MT-12", title: "C", state: "Todo", assigned_to_worker: true}
+
+      state = %Orchestrator.State{
+        running: %{"a" => %{identifier: "MT-10", issue: issue_a}},
+        claimed: MapSet.new(["b"]),
+        retry_attempts: %{},
+        max_concurrent_agents: 1
+      }
+
+      # a is running, b is claimed, c is neither — only c should be pending
+      result = Orchestrator.compute_pending_for_test([issue_a, issue_b, issue_c], state)
+      assert length(result) == 1
+      assert hd(result).id == "c"
+    end
+
+    test "returns empty list when all issues are running or claimed" do
+      issue_a = %Issue{id: "a", identifier: "MT-10", title: "A", state: "Todo", assigned_to_worker: true}
+
+      state = %Orchestrator.State{
+        running: %{"a" => %{identifier: "MT-10", issue: issue_a}},
+        claimed: MapSet.new(),
+        retry_attempts: %{},
+        max_concurrent_agents: 1
+      }
+
+      result = Orchestrator.compute_pending_for_test([issue_a], state)
+      assert result == []
+    end
+
+    test "excludes blocked todo issues" do
+      blocked = %Issue{id: "b", identifier: "MT-11", title: "Blocked", state: "Todo", assigned_to_worker: true, blocked_by: [%{state: "In Progress"}]}
+
+      state = %Orchestrator.State{
+        running: %{},
+        claimed: MapSet.new(),
+        retry_attempts: %{},
+        max_concurrent_agents: 2
+      }
+
+      result = Orchestrator.compute_pending_for_test([blocked], state)
+      identifiers = Enum.map(result, & &1.identifier)
+      refute "MT-11" in identifiers
+    end
+  end
+
   test "application stop renders offline status" do
     rendered =
       ExUnit.CaptureIO.capture_io(fn ->
