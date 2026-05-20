@@ -703,6 +703,11 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **Goal:** deploy the agent's fix branch to the same dev site (same data, no DB reimport) and assert the bug is gone.
 
+   Before starting B1, update the step status file:
+   ```bash
+   echo '{"step": 13, "total": 15, "label": "Dev-site Phase B (deploy fix + after.png)"}' > .symphony-status.tmp && mv .symphony-status.tmp .symphony-status
+   ```
+
    **B1. Push the fix tag and trigger Phase B (fast, one-shot):**
 
    Both single-target and dual-target create the Jenkins tag in `./repo-client/`. The tag name must be Docker-safe (no `/`) and identifiable — use `agent-{{ issue.identifier }}-fix` in both cases. The difference is which commit it points to:
