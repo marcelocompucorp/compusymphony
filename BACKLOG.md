@@ -4,6 +4,56 @@ Engineering feedback items deferred from the v1.13 batch, pending a future plann
 
 ---
 
+## Item 19 — assert_bug_fixed produces false negatives on transition-based UI changes
+
+**Status:** Open. Surfaced by IESBUILD-247 (2026-05-21).
+
+**Problem.** The Phase B `assert_bug_fixed` Playwright assertion at WORKFLOW.md step 12b-bis can return false-negative — reporting the bug as still present when it has actually been fixed — for UI changes that involve CSS transitions or animations. The Core PR gate (item 12) then blocks a legitimately working fix.
+
+**Concrete failure case.** IESBUILD-247's deployed fix actually works (user confirmed manually in the browser: clicking outside the login popup closes it). But the agent's `assert_bug_fixed` kept reporting `popup.is_visible() == True` after the outside click, four times in a row. Looking at `repro_devsite_after.py`:
+
+```python
+page.mouse.click(target_x, target_y)
+page.wait_for_timeout(600)   # 600ms wait
+# ...
+assert not popup.is_visible(), "Expected ... HIDDEN after outside click"
+```
+
+The popup likely has a CSS transition (opacity fade or height collapse, common Bootstrap 5 pattern) that takes ~500–1000ms. At the 600ms check, the popup is mid-transition: opacity > 0 OR computed `display` not yet `none`. Playwright's `is_visible()` returns True. The fix is correct; the assertion's timing window is wrong.
+
+**Why this matters.** v1.13 item 12 made the Core PR gate first-class — `assert_bug_fixed` failure blocks `gh pr create`. The stricter the gate, the more painful a false negative becomes:
+- Blocks the run with `AGENT_DONE = blocked-verify`
+- Combined with item 18 (no actual stop), kicks off an indefinite Phase B retry loop
+- Operator has to manually inspect, confirm the fix works, and either open the PR by hand or relax the test
+
+The IESBUILD-247 case wasted ~70 min of CI + 4 dev-site re-releases before the loop was broken. Most of that was item 18's fault, but the root trigger was item 19's false negative.
+
+**Proposed fix (sketch for v1.14 plan stage).**
+
+Several layers, in increasing order of effort:
+
+1. **Generous default wait window.** Replace fixed `page.wait_for_timeout(600)` with a polling loop: try `is_visible()` once a second for up to 5–10 seconds; assertion passes as soon as it returns False. This handles transitions up to 5–10s without flakiness, and adds minimal time when the assertion passes quickly.
+
+2. **Use Playwright's `expect(...).to_be_hidden()` with timeout.** Playwright has built-in retrying assertions (`expect(locator).to_be_hidden(timeout=10000)`) designed exactly for this. Migrate `assert not is_visible()` → `expect(popup).to_be_hidden(timeout=10000)`. This is the idiomatic Playwright pattern.
+
+3. **Multi-signal verification.** Check `aria-expanded`, `display`, AND visual visibility — at least two of three must agree on "hidden" before considering the popup closed. Reduces single-source flakiness.
+
+4. **Reviewer guidance.** In `prompts/code-reviewer.md`, add a check for "does the Phase B `assert_bug_fixed` use `wait_for_timeout(<fixed-ms>)` followed by an immediate is_visible() check? If so, suggest Playwright's retrying `expect(...).to_be_hidden(timeout=...)` pattern." Catches the anti-pattern before it ships.
+
+5. **Cross-reference item 17.** Both items are about gate reliability. Item 17 is "wrong bug reproduced" (false-positive direction — agent claims success on wrong symptom). Item 19 is "right fix not detected" (false-negative direction). Together they bound the gate's failure modes. A v1.14 plan that addresses gate-reliability holistically might cover both.
+
+**Open questions for v1.14 plan stage:**
+- Should the default `assert_bug_fixed` template in `prompts/visual-repro.md` switch to `expect(...).to_be_hidden(timeout=10000)`? If yes, what's the right default timeout — 5s, 10s, 15s?
+- Are there other Playwright assertion patterns in `prompts/visual-repro.md` that have the same fixed-timeout anti-pattern?
+- How should an operator override / relax the gate for a known false-negative? A `agent:phase-b-skip` label? A `## Comments` annotation that the reviewer reads?
+
+**Action for IESBUILD-247:** The fix on `agent/IESBUILD-247-fix` (compu_bs5 branch) and `qa-IESBUILD-247` (ies branch) is correct and deployed. To complete this ticket without re-dispatch:
+1. Manually open the core PR: `gh pr create --repo compucorp/compu_bs5 --base master --head agent/IESBUILD-247-fix`
+2. Post Jira comment explaining the false negative and the manual completion path.
+3. Don't re-apply `agent:todo` until item 19 (and ideally 17 + 18) is in place.
+
+---
+
 ## Item 18 — Agent must STOP after writing AGENT_DONE
 
 **Status:** Open. Surfaced by IESBUILD-247 (2026-05-21).
