@@ -590,10 +590,10 @@ Same as §8: a Playwright assertion that fires when the bug is GONE. For non-DOM
 |---|---|
 | §9a: `assert_bug_reproduced` doesn't fire | **STOP.** Post Jira comment (URL tested, steps attempted, assertion did not fire). Proceed to WORKFLOW.md step 15 with prefix `blocked-verify`. Do NOT open PR. |
 | §9b: `assert_bug_fixed` doesn't fire | **BLOCK** — attempt recovery once per WORKFLOW.md Phase B recovery paragraph (diagnose + commit fix + re-trigger + re-assert). If the second attempt also fails: proceed to WORKFLOW.md step 15 with prefix `blocked-verify`. No PR. |
-| Playwright timeout / unreachable (either phase) | Continue to 12c with `## Comments` note. |
-| Drupal login fails (`get_devsite_drupal_admin_creds` fallback tried, still rejected) | Continue to 12c with `## Comments` note. Operator must inspect creds. |
+| Playwright timeout / unreachable (either phase) | **STOP.** Post Jira comment naming the host + timeout cause. Proceed to WORKFLOW.md step 15 with prefix `blocked-verify`. Apply `agent:blocked` label. (Symptom: dev site exists but Playwright can't reach it — could be transient network, dev-site post-deploy delay, or DNS. Operator decides whether to retry by archiving the workspace.) |
+| Drupal login fails (`get_devsite_drupal_admin_creds` fallback tried, still rejected) | **STOP.** Post Jira comment naming the credential lookup path attempted. Proceed to WORKFLOW.md step 15 with prefix `blocked-verify`. Apply `agent:blocked` label. Operator must inspect / restore dev-site Drupal admin credentials. |
 | Logged-in regression check fails (`assert_bug_fixed` fires anonymous but not logged-in) | **BLOCK** — proceed to WORKFLOW.md step 15 with prefix `blocked-verify`. The fix breaks the authenticated user flow; do not open PR. (Recovery cap from Phase B's recovery paragraph applies here too — at most one recovery attempt per ticket.) |
-| `assert_staging_host` rejects the host | Defensive: should never happen (Jenkins only produces `*.cc-test.site`). If it does, treat as Jenkins console parse failure — continue to 12c with `## Comments` note. |
+| `assert_staging_host` rejects the host | Defensive: should never happen (Jenkins only produces `*.cc-test.site`). If it does, the safest action is to **STOP** — proceed to WORKFLOW.md step 15 with prefix `blocked-verify` and apply `agent:blocked`. Operator investigates Jenkins console-parsing logic in `repro_helpers.py`. |
 
 ### §9c — Small-element screenshots (device_scale_factor=3)
 

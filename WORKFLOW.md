@@ -620,7 +620,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    **A2. Pick the database source** based on where the bug was reported:
    - **Bug reported on a staging site** (hostname ends `.cc-staging.site`): pass the bare staging hostname as `anondb_url` (e.g. `ies2.cc-staging.site`). The Groovy pipeline generates S3 presigned URLs for that hostname's backup bucket automatically.
-   - **Bug reported on production or any other site**: call `resolve_anondb_url("<ticket-hostname-from-3b>")` from `repro_helpers` — returns the client-matched anondbs URL (e.g. `https://anondbs.cc-infra.tools/dir.php?name=…`). If it returns `None` → skip both phases entirely, note in `## Comments`: "Dev-site step skipped: anondb lookup returned None for `<hostname>`." Continue to 12c.
+   - **Bug reported on production or any other site**: call `resolve_anondb_url("<ticket-hostname-from-3b>")` from `repro_helpers` — returns the client-matched anondbs URL (e.g. `https://anondbs.cc-infra.tools/dir.php?name=…`). If it returns `None` → **STOP** per the failure-modes table (anondb None row); post Jira comment, apply `agent:blocked`, proceed to step 15 with prefix `blocked-verify`. Do NOT continue to 12c.
 
    **A3. Push the broken tag and trigger Phase A (fast, one-shot):**
    ```bash
@@ -684,7 +684,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    pathlib.Path("<workspace>/.devsite-host").write_text(host)
    print(f"PHASE_A_HOST={host}")
    ```
-   Exit code `42` → sleep 60 s, re-run **`poll_phase_a.py`** (NOT `trigger_phase_a.py` — the job is already queued/running; re-running the trigger creates a duplicate dev site). `0` → proceed to A5. Any other non-zero or cap exceeded → **Phase A failure** (see failure table; skip both phases, continue to 12c).
+   Exit code `42` → sleep 60 s, re-run **`poll_phase_a.py`** (NOT `trigger_phase_a.py` — the job is already queued/running; re-running the trigger creates a duplicate dev site). `0` → proceed to A5. Any other non-zero or cap exceeded → **Phase A failure** (see failure table; **STOP** — post Jira comment, apply `agent:blocked`, proceed to step 15 with prefix `blocked-verify`).
 
    **A5. Capture before.png:**
 
@@ -778,7 +778,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    pathlib.Path("<workspace>/.release-done").write_text("ok")
    print(f"PHASE_B_DONE host={devsite_host}")
    ```
-   Exit code `42` → sleep 60 s, re-run **`poll_phase_b.py`** (NOT `trigger_phase_b.py` — the job is already queued/running; re-running the trigger creates a duplicate release). `0` → proceed to B3. Any other non-zero or cap exceeded → **Phase B failure** (see failure table; skip `after.png`, continue to 12c).
+   Exit code `42` → sleep 60 s, re-run **`poll_phase_b.py`** (NOT `trigger_phase_b.py` — the job is already queued/running; re-running the trigger creates a duplicate release). `0` → proceed to B3. Any other non-zero or cap exceeded → **Phase B failure** (see failure table; **STOP** — post Jira comment, apply `agent:blocked`, proceed to step 15 with prefix `blocked-verify`).
 
    **B3. Capture after.png (and optionally after.gif):**
 
@@ -801,12 +801,12 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    | Failure | Behaviour |
    |---|---|
-   | Repo not in `SITE_DEPLOYABLE_REPOS` | Skip both phases. One-line `## Comments` note. Continue to 12c. |
+   | Repo not in `SITE_DEPLOYABLE_REPOS` | **STOP.** Post Jira comment via the Atlassian MCP naming the target repo and noting Symphony has no dev-site path for it. Proceed to step 15 with prefix `blocked-verify`. Apply the `agent:blocked` label (see step 14). Operator decides whether to (a) add the repo to the allowlist if a dev-site path exists, (b) verify manually + override, or (c) cancel. |
    | Doc-only diff | Skip both phases. One-line `## Comments` note. Continue to 12c. |
-   | anondb lookup returns `None` | Skip both phases. Note in `## Comments`. Continue to 12c. |
-   | Phase A FAILURE / timeout / cap | Skip both phases. Note build # in `## Comments`. Use staging `before.png` from step 3b. Continue to 12c. |
+   | anondb lookup returns `None` | **STOP.** Post Jira comment via the Atlassian MCP naming the hostname that returned None and the Mongo lookup query attempted. Proceed to step 15 with prefix `blocked-verify`. Apply the `agent:blocked` label (see step 14). |
+   | Phase A FAILURE / timeout / cap | **STOP.** Post Jira comment via the Atlassian MCP naming the Jenkins build URL and likely cause (HTTP code, timeout, build error message). Proceed to step 15 with prefix `blocked-verify`. Apply the `agent:blocked` label (see step 14). Common cause: bot user lost permission on the Jenkins job (Jenkins returns 404 for unauthorized paths to hide existence; an HTTP 404 from `_DEVSITE_JOB_PATH` typically means a permission change, not a moved job). |
    | `assert_bug_reproduced` doesn't fire | **STOP.** For sub-40px element bugs (icons, badges, narrow borders), retry once at `device_scale_factor=3` per `visual-repro.md` §9c BEFORE stopping. If §9c also fails: post Jira comment (URL tested, steps attempted, assertion did not fire even at 3× DPI). Proceed to step 15 with prefix `blocked-verify`. Do NOT open PR. |
-   | Phase B FAILURE / timeout / cap | Skip `after.png`. Note build # in `## Comments`. Continue to 12c. |
+   | Phase B FAILURE / timeout / cap | **STOP.** Post Jira comment via the Atlassian MCP naming the Jenkins build URL and likely cause. Proceed to step 15 with prefix `blocked-verify`. Apply the `agent:blocked` label (see step 14). |
    | `assert_bug_fixed` fails on dev site | Attempt recovery (diagnose + commit fix + re-trigger Phase B) **at most once**, per the recovery paragraph above. If the second attempt also fails: **Block PR.** Proceed to step 15 with prefix `blocked-verify`. Jira blocker comment. |
 
    **Orphan-tag note:** A6 and B4 push-delete the Jenkins tags after each phase. If the agent crashes or is interrupted between the tag push and the delete, `agent-<TICKET>-before` and/or `agent-<TICKET>-fix` tags will leak on the remote. They are harmless (lightweight tags; no CI triggers on them) but accumulate over time. If you notice orphan `agent-*` tags when inspecting a repo, delete them manually with `git push origin --delete <tag-name>`.
@@ -821,7 +821,9 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round AND (12b-bis ran to completion OR 12b-bis was skipped per its own gates — but NEVER if 12b-bis blocked). Never run `gh pr create` directly without those rounds having been the final actions; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
 
-   **Core PR gate (dual-target only — first-class invariant):** for core-rooted runs, the core PR (against `compucorp/<core>`) opens **ONLY** after Phase B's `after.png` confirms `assert_bug_fixed` fired in the client's deployed environment. If Phase B's assertion fails after the one allowed recovery attempt (see the recovery paragraph in Phase B): do NOT open the core PR. Proceed to step 15 with prefix `blocked-verify`. Leave the pushed `agent/<TICKET>-fix` branch (on the core repo) and `qa-<TICKET>` branch (on the client repo) for operator inspection. Phase B failure indicates that the core fix is either wrong, incomplete, or that the dev-site lacks the data state to expose the bug — either way, an unverified core PR would spread the problem to the next Compuclient release.
+   **PR gate (first-class invariant):** the PR — whether against a client repo or a core repo — opens **ONLY** after Phase B's `after.png` confirms `assert_bug_fixed` fired in the deployed environment. The single exception is when step 12b-bis was legitimately skipped per the **Doc-only diff** row of the failure-modes table (no runtime to verify). In every other case where Phase A or Phase B couldn't complete — Jenkins infra failure, anondb missing, repo not in `SITE_DEPLOYABLE_REPOS`, assertion failure after the one allowed recovery attempt — **STOP.** Proceed to step 15 with prefix `blocked-verify`. Leave any pushed branches (`agent/<TICKET>-fix` on the core repo for dual-target; `qa-<TICKET>` on the client repo) for operator inspection. Apply the `agent:blocked` label (step 14). An unverified PR — especially a core PR that would propagate via the next Compuclient release — is worse than a blocked ticket: it looks like a clean success on the dashboard but ships untested code.
+
+   _Footnote on other non-runtime diff categories:_ tests-only, lint-config-only, and CI-config-only diffs currently block at the `assert_bug_reproduced` gate (no runtime symptom to assert against). That's the right outcome for now — those tickets rarely auto-flow. If non-runtime auto-PRs become a friction point, extend the legitimate-skip list explicitly rather than weakening the PR gate.
 
    **Single-target:** PR targets the client repo's default branch (`master` for most client repos, or the RC branch if one is active).
 
@@ -862,9 +864,15 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    >
    > Client QA branch: propagation failed (`git apply --3way` conflict — vendored copy has diverged from core). Manual action: (a) cherry-pick the core commit onto a fresh `qa-{{ issue.identifier }}` branch resolving the conflict by hand, or (b) wait for the core PR to merge into the next Compuclient release and the fix will propagate automatically.
 
-14. **Remove the `agent:todo` label** from the ticket via the Atlassian MCP. This signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll. If you blocked instead of completing, leave the label on so a human can decide whether to retry; document the blocker in the Jira comment.
+14. **Resolve the labels** on the ticket via the Atlassian MCP.
 
    **Decide "blocked vs completed" from this session's actual outcome** — did Phase B's `assert_bug_fixed` fire (after recovery if applicable)? Did `gh pr create` succeed? Do NOT try to read `AGENT_DONE` to decide — the file does not exist yet (it is written only at step 15).
+
+   **On the success path:** remove the `agent:todo` label via the Atlassian MCP (`editJiraIssue` with `update.labels.remove`). Do NOT apply `agent:blocked`. The label removal signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll.
+
+   **On the block path** (any `blocked*` prefix in step 15): **leave** `agent:todo` on AND **apply** the `agent:blocked` label via the Atlassian MCP (`editJiraIssue` with `update.labels.add`). The `agent:blocked` label is purely informational — it makes blocked tickets filterable from any Jira board. Symphony's own poll / dispatch / preflight logic does NOT read this label; removing it has no effect on Symphony's behavior. Retry is operator-driven via workspace rename + `agent:todo` re-apply. Single-click retry-from-Jira is tracked as BACKLOG item 21 (`agent:retry` label, deferred to v1.14).
+
+   **Label auto-creation note:** Atlassian Cloud auto-creates labels on first use, so no Jira admin action is required to provision `agent:blocked` before this lands.
 
 15. **Write `AGENT_DONE` and stop.** This is the **only** place in the standard Routine (steps 1–15) where `<workspace>/AGENT_DONE` is written. Earlier steps that say "proceed to step 15 with prefix X" route here with the correct prefix; they never write the file themselves. (The dry-run mode at the top of this document has its own terminal write — that is a separate mode, not the standard Routine.) Once `AGENT_DONE` is written, the run is over: do NOT continue tool calls, do NOT retry, do NOT update the file. If you wrote `AGENT_DONE` and you are still active in the session, the workflow has been violated.
 
