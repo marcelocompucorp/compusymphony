@@ -6,7 +6,7 @@ Engineering feedback items deferred from the v1.13 batch, pending a future plann
 
 ## Item 19 — assert_bug_fixed produces false negatives on transition-based UI changes
 
-**Status:** Sub-fixes (a) and (d) landed in v1.13.2 (`<follow-up commit>`). Sub-fixes (b) and (c) deferred — add when a real ticket needs them. Surfaced by IESBUILD-247 (2026-05-21).
+**Status:** Sub-fixes (a) and (d) landed in v1.13.2 (commit `a85dcb4`). Sub-fixes (b) and (c) deferred — add when a real ticket needs them. Surfaced by IESBUILD-247 (2026-05-21).
 
 **What landed in v1.13.2:**
 - (a) `visual-repro.md` §8's "`assert_bug_fixed(page)` — inverse assertion" section now includes a dedicated "Async state assertions" sub-section that prescribes Playwright's retrying `expect(...).to_be_hidden(timeout=10000)` / `to_be_visible(timeout=10000)` / `to_have_class(...)` / `to_have_text(...)` patterns for interaction-driven async state changes. Default timeout 10 s covers Bootstrap fades (~500 ms), modal animations (~300 ms), and 5 s auto-advance carousels with headroom. Carve-out documents legitimate `wait_for_timeout` uses (CSS paint settle after `add_style_tag`, Jenkins polls, network-idle waits). Cross-referenced from §3 so `assert_bug_reproduced` gets the same guidance symmetrically.
