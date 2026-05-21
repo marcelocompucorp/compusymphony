@@ -321,7 +321,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
        If found → proceed with the core PR to `compucorp/<name>`. If not found → STOP and ask. Closes the gap between the ~28-repo static allowlist and the ~54-repo authoritative list.
      - **Secondary (QA-branch target):** the originating client repo (from step 3.1). Branch name `qa-<ticket-key>` (e.g., `qa-IESBUILD-247`). NO PR is opened on the secondary; only a branch push for QA-team testing.
 
-   - **Uncertain** — root cause is not clearly client-exclusive or core-rooted after investigation. **STOP. Do NOT guess.** Post a Jira comment explaining what you found, why the classification is ambiguous, and what additional information would resolve it. Set `AGENT_DONE = blocked <timestamp> <TICKET>`. A misclassification that opens a PR in the wrong repo is harder to undo than a stopped run.
+   - **Uncertain** — root cause is not clearly client-exclusive or core-rooted after investigation. **STOP. Do NOT guess.** Post a Jira comment explaining what you found, why the classification is ambiguous, and what additional information would resolve it. Proceed to step 15 with prefix `blocked`. A misclassification that opens a PR in the wrong repo is harder to undo than a stopped run.
 
    Use `gh api "repos/<owner>/<repo>" --jq .default_branch` at runtime to confirm the default branch for each target repo.
 
@@ -508,7 +508,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
     If `after.png` was captured (§8 CSS-only or 12b-bis Phase B), PR `## After` references the dev-site URL or notes the workspace capture.
 
-    **Reproduction gate.** If exit non-zero OR `before.png` missing AND the two-condition gate at the top of step 10 was met (staging URL resolvable + host passes `assert_staging_host`): **STOP.** Do NOT proceed to step 11 or 12. Before stopping, try the small-element fallback: if the bug description references an icon, badge, narrow button, or any element below ~40px, re-run with `device_scale_factor=3` as described in `prompts/visual-repro.md` §9c. If §9c reproduces the bug, continue normally. If §9c also fails to fire `assert_bug_reproduced`: post a Jira comment via the Atlassian MCP explaining (a) the URL tested, (b) the reproduction steps attempted, (c) that `assert_bug_reproduced` did not fire even at 3× DPI. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`.
+    **Reproduction gate.** If exit non-zero OR `before.png` missing AND the two-condition gate at the top of step 10 was met (staging URL resolvable + host passes `assert_staging_host`): **STOP.** Do NOT proceed to step 11 or 12. Before stopping, try the small-element fallback: if the bug description references an icon, badge, narrow button, or any element below ~40px, re-run with `device_scale_factor=3` as described in `prompts/visual-repro.md` §9c. If §9c reproduces the bug, continue normally. If §9c also fails to fire `assert_bug_reproduced`: post a Jira comment via the Atlassian MCP explaining (a) the URL tested, (b) the reproduction steps attempted, (c) that `assert_bug_reproduced` did not fire even at 3× DPI. Proceed to step 15 with prefix `blocked-verify`.
 
     If the gate at the top of step 10 was NOT met (no staging URL resolvable, or host did not pass `assert_staging_host`): document in PR `## Comments` ("Visual repro skipped: <reason>") and proceed with `## Manual verification required` in the PR body.
 
@@ -599,7 +599,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    12b. **Interpret the verdict** (loop per invariant 9):
    - `approve` → continue to 12c
    - `reject` with BLOCKERs/QUESTIONs and N < 3 → fix the BLOCKERs (revise plan + code), re-dispatch (back to 12a)
-   - `reject` and N == 3 → STOP. Post Jira comment quoting `review-result-r3.json.findings` (BLOCKERs only) and the rounds attempted. Leave `agent:todo` label ON. Write `<workspace>/AGENT_DONE` with content: `blocked-review <ISO-8601-timestamp> {{ issue.identifier }}`. Exit without opening PR.
+   - `reject` and N == 3 → STOP. Post Jira comment quoting `review-result-r3.json.findings` (BLOCKERs only) and the rounds attempted. Leave `agent:todo` label ON. Proceed to step 15 with prefix `blocked-review`. Do not open PR.
 
    12b-bis. **Two-phase dev-site verification** (mandatory if the target repo is in `SITE_DEPLOYABLE_REPOS` per invariant #5; skip with a one-line `## Comments` note otherwise — e.g. extension, theme, or infra repo). Runs ONLY after 12b returned `verdict: approve`; the reviewer evaluates code, the dev site evaluates the deployed result.
 
@@ -690,7 +690,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    Run `visual-repro.md §9a`: reproduce the bug → `assert_bug_reproduced` → capture `before.png`. Save to `<workspace>/before.png` and copy to `repo/.agent-artifacts/{{ issue.identifier }}/before.png`. Commit on the agent branch (second commit after the fix commit — intentional append post-approval).
 
-   **Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire on the dev site after the broken tag was deployed. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped.
+   **Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire on the dev site after the broken tag was deployed. Proceed to step 15 with prefix `blocked-verify`. A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped.
 
    **A6. Clean up the before tag:**
    ```bash
@@ -788,7 +788,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    Run `visual-repro.md §9b`: `assert_bug_fixed` → capture `after.png`. Save to `<workspace>/after.png`. Per the v1.12 gitignore policy (step 10e), screenshots are workspace-only — do NOT commit to the repo.
 
-   If `assert_bug_fixed` **fails** (assertion didn't fire): **BLOCK** the PR. Post a Jira blocker comment quoting (a) the reviewer's approval, (b) both Jenkins build numbers + dev-site URL, (c) the assertion failure, and (d) likely cause: "DB or data state may not reproduce the bug on the dev site." Leave `agent:todo` ON. Write `<workspace>/AGENT_DONE` with prefix `blocked-verify`. Skip 12c entirely.
+   If `assert_bug_fixed` **fails** (assertion didn't fire): the agent's fix didn't take. **You may attempt recovery at most once.** Diagnose the failure (live browser eval, jQuery `_data(document, 'events')`, computed-style checks, etc.), commit a follow-up fix to the same branch (`agent/{{ issue.identifier }}-fix`), re-tag, re-trigger Phase B from B1, and re-assert. If the **second** `assert_bug_fixed` also fails: **BLOCK** the PR. Post a Jira blocker comment quoting (a) the reviewer's approval, (b) both Jenkins build numbers + dev-site URL, (c) the assertion failure, (d) any diagnostic you gathered, and (e) likely cause: "DB or data state may not reproduce the bug on the dev site, or the fix has a residual defect that needs human review." Leave `agent:todo` ON. Proceed to step 15 with prefix `blocked-verify`. Do not run Phase B a third time — the cap is a hard limit.
 
    **B4. Clean up the fix tag:**
    ```bash
@@ -805,9 +805,9 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    | Doc-only diff | Skip both phases. One-line `## Comments` note. Continue to 12c. |
    | anondb lookup returns `None` | Skip both phases. Note in `## Comments`. Continue to 12c. |
    | Phase A FAILURE / timeout / cap | Skip both phases. Note build # in `## Comments`. Use staging `before.png` from step 3b. Continue to 12c. |
-   | `assert_bug_reproduced` doesn't fire | **STOP.** For sub-40px element bugs (icons, badges, narrow borders), retry once at `device_scale_factor=3` per `visual-repro.md` §9c BEFORE stopping. If §9c also fails: post Jira comment (URL tested, steps attempted, assertion did not fire even at 3× DPI). Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. Do NOT open PR. |
+   | `assert_bug_reproduced` doesn't fire | **STOP.** For sub-40px element bugs (icons, badges, narrow borders), retry once at `device_scale_factor=3` per `visual-repro.md` §9c BEFORE stopping. If §9c also fails: post Jira comment (URL tested, steps attempted, assertion did not fire even at 3× DPI). Proceed to step 15 with prefix `blocked-verify`. Do NOT open PR. |
    | Phase B FAILURE / timeout / cap | Skip `after.png`. Note build # in `## Comments`. Continue to 12c. |
-   | `assert_bug_fixed` fails on dev site | **Block PR.** `AGENT_DONE` with `blocked-verify` prefix. Jira blocker comment. |
+   | `assert_bug_fixed` fails on dev site | Attempt recovery (diagnose + commit fix + re-trigger Phase B) **at most once**, per the recovery paragraph above. If the second attempt also fails: **Block PR.** Proceed to step 15 with prefix `blocked-verify`. Jira blocker comment. |
 
    **Orphan-tag note:** A6 and B4 push-delete the Jenkins tags after each phase. If the agent crashes or is interrupted between the tag push and the delete, `agent-<TICKET>-before` and/or `agent-<TICKET>-fix` tags will leak on the remote. They are harmless (lightweight tags; no CI triggers on them) but accumulate over time. If you notice orphan `agent-*` tags when inspecting a repo, delete them manually with `git push origin --delete <tag-name>`.
 
@@ -821,7 +821,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    12c. **`gh pr create`** — Only after 12a was dispatched AND 12b returned `verdict: approve` on the latest round AND (12b-bis ran to completion OR 12b-bis was skipped per its own gates — but NEVER if 12b-bis blocked). Never run `gh pr create` directly without those rounds having been the final actions; running it bypasses the invariant #9 gate. The audit (`analyze-run.sh`) reports the reviewer-dispatch count and the `gh pr create` count separately — an operator inspecting the run will see immediately if the latter happened without the former and treat that as a workflow violation. Body follows `dev-ai-playbooks/.github/PULL_REQUEST_TEMPLATE.md` exactly (Overview / Before / After / Technical Details [with `### Core overrides` subsection if applicable] / Comments — see invariant 4). The PR body's `## Comments` section lists any WARNINGs/SUGGESTIONs from the final reviewer round that you chose to document rather than fix, with brief reasoning per item. Do NOT mention the reviewer subagent in the body — that's internal process; the PR's `## Comments` should read as concrete reviewer guidance, not as audit trail.
 
-   **Core PR gate (dual-target only — first-class invariant):** for core-rooted runs, the core PR (against `compucorp/<core>`) opens **ONLY** after Phase B's `after.png` confirms `assert_bug_fixed` fired in the client's deployed environment. If Phase B's assertion fails: do NOT open the core PR. Set `AGENT_DONE = blocked-verify`. Leave the pushed `agent/<TICKET>-fix` branch (on the core repo) and `qa-<TICKET>` branch (on the client repo) for operator inspection. Phase B failure indicates that the upstream fix is either wrong, incomplete, or that the dev-site lacks the data state to expose the bug — either way, an unverified core PR would spread the problem to the next Compuclient release.
+   **Core PR gate (dual-target only — first-class invariant):** for core-rooted runs, the core PR (against `compucorp/<core>`) opens **ONLY** after Phase B's `after.png` confirms `assert_bug_fixed` fired in the client's deployed environment. If Phase B's assertion fails after the one allowed recovery attempt (see the recovery paragraph in Phase B): do NOT open the core PR. Proceed to step 15 with prefix `blocked-verify`. Leave the pushed `agent/<TICKET>-fix` branch (on the core repo) and `qa-<TICKET>` branch (on the client repo) for operator inspection. Phase B failure indicates that the core fix is either wrong, incomplete, or that the dev-site lacks the data state to expose the bug — either way, an unverified core PR would spread the problem to the next Compuclient release.
 
    **Single-target:** PR targets the client repo's default branch (`master` for most client repos, or the RC branch if one is active).
 
@@ -864,11 +864,18 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 14. **Remove the `agent:todo` label** from the ticket via the Atlassian MCP. This signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll. If you blocked instead of completing, leave the label on so a human can decide whether to retry; document the blocker in the Jira comment.
 
-15. **Write `AGENT_DONE` and stop.**
+   **Decide "blocked vs completed" from this session's actual outcome** — did Phase B's `assert_bug_fixed` fire (after recovery if applicable)? Did `gh pr create` succeed? Do NOT try to read `AGENT_DONE` to decide — the file does not exist yet (it is written only at step 15).
 
-   - **Single-target:** `success <ISO-8601-timestamp> {{ issue.identifier }}`
-   - **Dual-target (QA branch pushed successfully):** `success-dual <ISO-8601-timestamp> {{ issue.identifier }}`
+15. **Write `AGENT_DONE` and stop.** This is the **only** place in the standard Routine (steps 1–15) where `<workspace>/AGENT_DONE` is written. Earlier steps that say "proceed to step 15 with prefix X" route here with the correct prefix; they never write the file themselves. (The dry-run mode at the top of this document has its own terminal write — that is a separate mode, not the standard Routine.) Once `AGENT_DONE` is written, the run is over: do NOT continue tool calls, do NOT retry, do NOT update the file. If you wrote `AGENT_DONE` and you are still active in the session, the workflow has been violated.
+
+   Choose the prefix based on the run's outcome:
+
+   - **Single-target success:** `success <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Dual-target success (QA branch pushed successfully):** `success-dual <ISO-8601-timestamp> {{ issue.identifier }}`
    - **Dual-target (propagation failed, core PR only):** `success-core-only <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Blocked at classification (step 3.2 Uncertain) or environmental blocker (see "Blockers" section below):** `blocked <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Reviewer rejected at N=3 (step 12b):** `blocked-review <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Reproduction or verification failed (step 10d, Phase A A5, Phase B `assert_bug_fixed` after recovery, or Core PR gate):** `blocked-verify <ISO-8601-timestamp> {{ issue.identifier }}`
 
    Do not transition the Jira status yourself — leave that to the human reviewing the PR.
 
@@ -881,7 +888,7 @@ If you hit any of these, stop and post a single Jira comment describing the bloc
 - The fix requires touching infrastructure (Jenkins, Docker Swarm, CloudFlare config) — out of scope for Phase 1.
 - The bug cannot be reproduced and there is no test that can be written for it without speculative changes.
 
-When blocked, the Jira comment should state: what's missing, why it blocks the work, and the concrete human action required to unblock. After posting the comment, write `<workspace>/AGENT_DONE` with content: `blocked <ISO-8601-timestamp> {{ issue.identifier }}` and exit.
+When blocked, the Jira comment should state: what's missing, why it blocks the work, and the concrete human action required to unblock. After posting the comment, proceed to step 15 with prefix `blocked` (do not write `AGENT_DONE` here — step 15 is the only write site).
 
 ## AGENT_DONE schema
 

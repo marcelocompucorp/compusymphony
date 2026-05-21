@@ -489,7 +489,7 @@ with sync_playwright() as p:
     browser.close()
 ```
 
-**Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire. Set `AGENT_DONE = blocked-verify <timestamp> <TICKET>`. A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped. (Matches WORKFLOW.md Phase A A5 gate.)
+**Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire. Proceed to WORKFLOW.md step 15 with prefix `blocked-verify`. A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped. (Matches WORKFLOW.md Phase A A5 gate.)
 
 ### §9b — Phase B: after.png after release
 
@@ -548,7 +548,7 @@ Same as §8: a Playwright assertion that fires when the bug is GONE. For non-DOM
 
 | §9 failure | 12b-bis disposition |
 |---|---|
-| §9a: `assert_bug_reproduced` doesn't fire | **STOP.** Post Jira comment (URL tested, steps attempted, assertion did not fire). Set `AGENT_DONE = blocked-verify`. Do NOT open PR. |
+| §9a: `assert_bug_reproduced` doesn't fire | **STOP.** Post Jira comment (URL tested, steps attempted, assertion did not fire). Proceed to WORKFLOW.md step 15 with prefix `blocked-verify`. Do NOT open PR. |
 | §9b: `assert_bug_fixed` doesn't fire | **BLOCK** — `blocked-verify`, no PR. |
 | Playwright timeout / unreachable (either phase) | Continue to 12c with `## Comments` note. |
 | Drupal login fails (`get_devsite_drupal_admin_creds` fallback tried, still rejected) | Continue to 12c with `## Comments` note. Operator must inspect creds. |

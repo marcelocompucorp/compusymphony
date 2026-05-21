@@ -56,7 +56,26 @@ Several layers, in increasing order of effort:
 
 ## Item 18 — Agent must STOP after writing AGENT_DONE
 
-**Status:** Open. Surfaced by IESBUILD-247 (2026-05-21).
+**Status:** Partially landed (Fix A — bookkeeping). Orchestrator-side enforcement deferred. Surfaced by IESBUILD-247 (2026-05-21).
+
+**Update 2026-05-21:** Original framing oversimplified. Reconstructing IESBUILD-247's actual sequence revealed three distinct nuances:
+
+1. **AGENT_DONE was written prematurely** as `blocked-verify` when Phase B first failed. Agent then recovered, fixed its own bug, re-deployed, succeeded, opened PR `compu_bs5#667`, and posted success Jira comment — but the stale `AGENT_DONE = blocked-verify` was never updated.
+2. **Step 14 (label removal) was skipped on the success path.** Agent likely interpreted its own earlier `blocked-verify` write as "I'm in blocked state, don't remove the label." Stale-signal-driven decision.
+3. **Process hung ~40 min after success** without producing further artifacts; operator had to SIGTERM.
+
+**Fix A landed (commit `<see git log>`):** "Defer AGENT_DONE writes to step 15." All mid-workflow gates now route to step 15 with a prefix (`blocked`, `blocked-verify`, `blocked-review`) rather than writing `AGENT_DONE` directly. Step 15 is the single write site for the standard Routine. Includes a one-retry cap on Phase B recovery so the agent has a documented bound on iterations. Solves nuances 1 and 2 transitively.
+
+**Still deferred (revisit if Fix A alone doesn't suffice):**
+
+- **Orchestrator-side enforcement.** Symphony Elixir process polls `<workspace>/AGENT_DONE` and SIGTERMs the agent on appearance. This is the load-bearing fix for nuance 3 (process hang). Not implemented yet — relying on the agent honouring step 15's "stop" prose discipline. If the next blocked-or-recover case shows another hang, this becomes priority.
+- **Broader Phase B trigger cap.** Today's one-retry cap is in the recovery paragraph; a hard orchestrator-side or repro-helper-side cap would catch any agent that ignores the prose cap. Tied to BACKLOG item 19's gate-reliability work.
+
+**Reference incident:** PR `compu_bs5#667` is open and correct despite the messy run. The agent's own diagnostic in Jira comment `#269946` correctly identified the `$(document).once(...)` Drupal 7 issue; the recovery commit `19e7e61` (closure-flag pattern) fixed it. Net outcome was good; only the bookkeeping was broken.
+
+---
+
+## Original framing (for historical context — superseded by Fix A above)
 
 **Problem.** WORKFLOW.md step 15 reads *"Write AGENT_DONE and stop."* The agent reliably writes the AGENT_DONE file but doesn't actually exit the Claude Code session afterwards. Instead it keeps processing — typically retrying whatever caused the blocker.
 
