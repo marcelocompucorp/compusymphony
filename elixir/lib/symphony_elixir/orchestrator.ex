@@ -123,8 +123,19 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
-        state = record_recent_session(state, running_entry)
         session_id = running_entry_session_id(running_entry)
+
+        # Pre-flight exits: agent never did real work; don't record them in
+        # recent sessions (they'd create noisy duplicate entries).
+        preflight_exit? =
+          case reason do
+            {:shutdown, {:workspace_already_done, _}} -> true
+            {:shutdown, {:workspace_inflight, _}} -> true
+            {:shutdown, {:workspace_orphan_branch, _, _}} -> true
+            _ -> false
+          end
+
+        state = if preflight_exit?, do: state, else: record_recent_session(state, running_entry)
 
         state =
           case reason do
@@ -137,6 +148,12 @@ defmodule SymphonyElixir.Orchestrator do
                 identifier: running_entry.identifier,
                 delay_type: :continuation
               })
+
+            {:shutdown, {:workspace_already_done, workspace}} ->
+              # Preflight sentinel: AGENT_DONE already exists when the agent
+              # started. The work is done; do NOT retry or we loop forever.
+              Logger.info("Workspace already done for issue_id=#{issue_id}; skipping retry. workspace=#{workspace}")
+              complete_issue(state, issue_id)
 
             {:shutdown, {:workspace_inflight, workspace}} ->
               # Preflight refused: another run is still active in this
@@ -471,7 +488,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp record_recent_session(%State{} = state, running_entry) do
     session = capture_session_data(running_entry)
     persist_session_meta(session)
-    recent = [session | state.recent_sessions] |> Enum.take(@max_recent_sessions)
+    # Deduplicate: keep only the most recent entry per identifier.
+    # The new session goes to the front; older entries for the same identifier
+    # are dropped so a ticket retried multiple times shows only once.
+    existing = Enum.reject(state.recent_sessions, &(&1.identifier == session.identifier))
+    recent = [session | existing] |> Enum.take(@max_recent_sessions)
     %{state | recent_sessions: recent}
   end
 
