@@ -64,7 +64,7 @@ Several layers, in increasing order of effort:
 2. **Step 14 (label removal) was skipped on the success path.** Agent likely interpreted its own earlier `blocked-verify` write as "I'm in blocked state, don't remove the label." Stale-signal-driven decision.
 3. **Process hung ~40 min after success** without producing further artifacts; operator had to SIGTERM.
 
-**Fix A landed (commit `<see git log>`):** "Defer AGENT_DONE writes to step 15." All mid-workflow gates now route to step 15 with a prefix (`blocked`, `blocked-verify`, `blocked-review`) rather than writing `AGENT_DONE` directly. Step 15 is the single write site for the standard Routine. Includes a one-retry cap on Phase B recovery so the agent has a documented bound on iterations. Solves nuances 1 and 2 transitively.
+**Fix A landed (commit `38bd4dc`):** "Defer AGENT_DONE writes to step 15." All mid-workflow gates now route to step 15 with a prefix (`blocked`, `blocked-verify`, `blocked-review`) rather than writing `AGENT_DONE` directly. Step 15 is the single write site for the standard Routine. Includes a one-retry cap on Phase B recovery so the agent has a documented bound on iterations. Solves nuances 1 and 2 transitively.
 
 **Still deferred (revisit if Fix A alone doesn't suffice):**
 
