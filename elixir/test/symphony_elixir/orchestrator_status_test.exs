@@ -1603,6 +1603,158 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
+  test "workspace_already_done exits complete the issue without retry and are not recorded in recent_sessions" do
+    issue_id = "issue-already-done"
+    orchestrator_name = Module.concat(__MODULE__, :AlreadyDoneOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: "MT-DONE",
+      issue: %Issue{id: issue_id, identifier: "MT-DONE", state: "In Progress"},
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:DOWN, process_ref, :process, self(), {:shutdown, {:workspace_already_done, "IESBUILD-999"}}})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    # Must not be in retry_attempts (no retry loop)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    # Must be in completed set
+    assert MapSet.member?(state.completed, issue_id)
+    # Must NOT appear in recent_sessions (pre-flight exit — no real work done)
+    assert state.recent_sessions == []
+  end
+
+  test "workspace_inflight exits do not appear in recent_sessions" do
+    issue_id = "issue-inflight"
+    orchestrator_name = Module.concat(__MODULE__, :InflightOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    process_ref = make_ref()
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: "MT-INFLIGHT",
+      issue: %Issue{id: issue_id, identifier: "MT-INFLIGHT", state: "In Progress"},
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:DOWN, process_ref, :process, self(), {:shutdown, {:workspace_inflight, "IESBUILD-998"}}})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.completed, issue_id)
+    assert state.recent_sessions == []
+  end
+
+  test "recent_sessions deduplicates by identifier keeping only the most recent entry" do
+    issue_id = "issue-dedup"
+    orchestrator_name = Module.concat(__MODULE__, :DedupOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    make_running_entry = fn issue_id, identifier ->
+      process_ref = make_ref()
+      entry = %{
+        pid: self(),
+        ref: process_ref,
+        identifier: identifier,
+        issue: %Issue{id: issue_id, identifier: identifier, state: "In Progress"},
+        session_id: nil,
+        turn_count: 0,
+        last_codex_message: nil,
+        last_codex_timestamp: nil,
+        last_codex_event: nil,
+        started_at: DateTime.utc_now()
+      }
+      {process_ref, entry}
+    end
+
+    # Inject first run for MT-DEDUP
+    {ref1, entry1} = make_running_entry.(issue_id, "MT-DEDUP")
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => entry1})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    # Simulate first run completing normally (abnormal exit → retry)
+    send(pid, {:DOWN, ref1, :process, self(), {:error, :boom}})
+    Process.sleep(50)
+
+    # Inject second run for the same MT-DEDUP identifier
+    {ref2, entry2} = make_running_entry.(issue_id, "MT-DEDUP")
+
+    :sys.replace_state(pid, fn s ->
+      s
+      |> Map.put(:running, %{issue_id => entry2})
+      |> Map.put(:claimed, MapSet.put(s.claimed, issue_id))
+    end)
+
+    # Second run exits normally
+    send(pid, {:DOWN, ref2, :process, self(), :normal})
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+
+    # Only one entry for MT-DEDUP — the most recent
+    mt_dedup_entries = Enum.filter(state.recent_sessions, &(&1.identifier == "MT-DEDUP"))
+    assert length(mt_dedup_entries) == 1
+  end
+
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_snapshot(pid, predicate, deadline_ms)

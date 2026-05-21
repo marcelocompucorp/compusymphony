@@ -491,7 +491,13 @@ defmodule SymphonyElixir.Orchestrator do
     # Deduplicate: keep only the most recent entry per identifier.
     # The new session goes to the front; older entries for the same identifier
     # are dropped so a ticket retried multiple times shows only once.
-    existing = Enum.reject(state.recent_sessions, &(&1.identifier == session.identifier))
+    # Guard on is_binary to avoid matching nil identifiers against each other.
+    existing =
+      if is_binary(session.identifier) do
+        Enum.reject(state.recent_sessions, &(&1.identifier == session.identifier))
+      else
+        state.recent_sessions
+      end
     recent = [session | existing] |> Enum.take(@max_recent_sessions)
     %{state | recent_sessions: recent}
   end
