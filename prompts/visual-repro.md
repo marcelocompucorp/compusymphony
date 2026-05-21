@@ -374,13 +374,20 @@ assert not popup.is_visible(), "..."  # races the close transition
 
 **Correct pattern:**
 ```python
+import re
 from playwright.sync_api import expect
 
 page.click("...")
 expect(popup).to_be_hidden(timeout=10000)               # waits up to 10s for the popup to close
 expect(menu).to_be_visible(timeout=10000)               # waits up to 10s for the menu to open
-expect(collapse).not_to_have_class("show", timeout=10000)
-expect(collapse).to_have_class("show", timeout=10000)
+
+# Class containment — use a regex, NOT a bare string.
+# `to_have_class("show")` matches the ENTIRE class attribute, so for
+# Bootstrap's `class="collapse show"` the bare string fails. Use a
+# word-boundary regex to match "show" anywhere in the class list.
+expect(collapse).to_have_class(re.compile(r"\bshow\b"), timeout=10000)
+expect(collapse).not_to_have_class(re.compile(r"\bshow\b"), timeout=10000)
+
 expect(carousel.locator(".active-item")).to_have_text("02", timeout=10000)  # 5s auto-advance + headroom
 ```
 
@@ -392,7 +399,7 @@ The 10 s default covers all common cases (Bootstrap fades ~500 ms, modal animati
 
 **Carve-out — when `wait_for_timeout` is legitimate:** the `page.wait_for_timeout(100)` after `add_style_tag` (§8 code pattern above) is for **CSS paint settlement before the assertion runs**, not for an animation. It's not the anti-pattern. The retrying `expect` inside the assertion makes it tolerant anyway, so leave the 100 ms paint-settle sleep. Other legitimate uses: post-`add_init_script` injection settle, Jenkins poll loops, network-idle waits. The anti-pattern is specifically `wait_for_timeout(N)` followed by an **immediate** `is_visible()` / `class_list` / `not popup.is_visible()` check inside `assert_bug_reproduced` or `assert_bug_fixed`.
 
-Requires `playwright>=1.20` (well below the version Symphony ships).
+`expect(...)` retrying assertions are available in `playwright-python` since version 1.20 (Feb 2022) — all modern releases include them. If you hit `AttributeError: ... has no attribute 'to_be_hidden'`, your agent runner has an unusually old Playwright; fall back to the structural-inverse class-list / computed-style assertion (still preferred over `wait_for_timeout + is_visible()`).
 
 ### Required structure (parallel to §3)
 
