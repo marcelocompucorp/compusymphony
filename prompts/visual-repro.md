@@ -195,7 +195,7 @@ if __name__ == "__main__":
 These three rules are validated by the code-reviewer subagent. Violations are BLOCKERs.
 
 - **First function call** in the script (after imports + module-level constant assignments like `SITE = "..."`) is `assert_staging_host(SITE)` — production safety rail.
-- `assert_bug_reproduced(page)` is **defined AND called immediately before `page.screenshot(path="before.png", ...)`** — the proof-of-understanding contract.
+- `assert_bug_reproduced(page)` is **defined AND called immediately before `page.screenshot(path="before.png", ...)`** — the proof-of-understanding contract. For interaction-driven async state (popup open, transition complete, carousel advance), use Playwright's retrying `expect(...)` assertions per §8's "Async state assertions" sub-section — **never** `wait_for_timeout(N) + is_visible()`.
 - **Stale-output guard:** first line of `main()` is `pathlib.Path("before.png").unlink(missing_ok=True)`. Prevents embedding a stale image from a prior failed run.
 
 ## 4. The 8 empirical gotchas (Compucorp Drupal 7)
@@ -360,6 +360,39 @@ Define the structural inverse of `assert_bug_reproduced`, **using the same `page
 
 - Before: `assert link_color == container_bg` → After: `assert link_color != container_bg`
 - Before: `assert "show" in collapse.class_list` → After: `assert "show" not in collapse.class_list`
+
+#### Async state assertions — use Playwright's retrying `expect`, not `wait_for_timeout + is_visible`
+
+**For interaction-driven async state changes** (click → element appears/disappears, CSS transition fade, popup close, modal dismiss, dropdown open, carousel slide advance, polling-indicator update): use Playwright's retrying `expect(...)` assertions. The retrying form polls until the condition holds or the timeout expires — it degrades to ~instant for static cases (zero happy-path cost) and waits up to `timeout` for transitions, async DOM updates, or auto-advance cycles.
+
+**Anti-pattern (do not use):**
+```python
+page.click("...")
+page.wait_for_timeout(600)            # too short for ~500–1000ms Bootstrap fade
+assert not popup.is_visible(), "..."  # races the close transition
+```
+
+**Correct pattern:**
+```python
+from playwright.sync_api import expect
+
+page.click("...")
+expect(popup).to_be_hidden(timeout=10000)               # waits up to 10s for the popup to close
+expect(menu).to_be_visible(timeout=10000)               # waits up to 10s for the menu to open
+expect(collapse).not_to_have_class("show", timeout=10000)
+expect(collapse).to_have_class("show", timeout=10000)
+expect(carousel.locator(".active-item")).to_have_text("02", timeout=10000)  # 5s auto-advance + headroom
+```
+
+The 10 s default covers all common cases (Bootstrap fades ~500 ms, modal animations ~300 ms, 5 s auto-advance carousel + headroom). Override only for unusually slow animations (`timeout=15000` etc.). **Do NOT bump `wait_for_timeout` instead of switching the pattern — fixed sleeps remain the anti-pattern even when longer.**
+
+**If the fix removes the element entirely** (rather than hiding it), use `expect(locator).to_have_count(0, timeout=N)` rather than `to_be_hidden`. `to_be_hidden` passes if the locator matches no element, so it would pass for "element removed" by coincidence and could hide a different failure mode; `to_have_count(0)` is specific to the intended change.
+
+**This guidance applies symmetrically to `assert_bug_reproduced`** — use `expect(locator).to_be_visible(timeout=10000)` for the before-state's "popup IS open after click" assertion, same retry semantics. (Anti-pattern is the same shape: `wait_for_timeout(N) + is_visible()` is brittle whether the bug is present or fixed.)
+
+**Carve-out — when `wait_for_timeout` is legitimate:** the `page.wait_for_timeout(100)` after `add_style_tag` (§8 code pattern above) is for **CSS paint settlement before the assertion runs**, not for an animation. It's not the anti-pattern. The retrying `expect` inside the assertion makes it tolerant anyway, so leave the 100 ms paint-settle sleep. Other legitimate uses: post-`add_init_script` injection settle, Jenkins poll loops, network-idle waits. The anti-pattern is specifically `wait_for_timeout(N)` followed by an **immediate** `is_visible()` / `class_list` / `not popup.is_visible()` check inside `assert_bug_reproduced` or `assert_bug_fixed`.
+
+Requires `playwright>=1.20` (well below the version Symphony ships).
 
 ### Required structure (parallel to §3)
 

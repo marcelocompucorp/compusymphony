@@ -305,6 +305,33 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
    - **Forbidden on non-CSS-only diffs.** If `after.png` is committed but the diff includes any non-CSS file, **BLOCKER**: `add_style_tag` cannot reliably simulate behavioral changes, so the captured `after.png` may misrepresent the post-deploy state. The agent must either drop after.png (and use the manual-verification block in PR `## After`) OR justify in `plan.md` why injection is still valid for this specific case (rare).
    - **PR ## After reference.** If `after.png` is committed, PR `## After` must reference it with the agent-branch raw URL (parallel to bullet 4's last sub-rule). **BLOCKER** if the image is committed but not referenced.
 
+6. **Async-state assertion anti-pattern (WARNING, v1.13.2+).** Scan inside any function whose name matches `assert_bug_*` (typically `assert_bug_reproduced` and `assert_bug_fixed`) — and the `reproduce()` / `reproduce_after_state()` body immediately preceding such an assertion call — for the following pattern:
+
+   ```
+   page.wait_for_timeout(N)   # any N
+   ...                        # within ~5 lines, no intervening expect()
+   assert ...is_visible()     # or:  assert not ...is_visible()
+                              # or:  assert "..." in ...class_list
+                              # or:  assert "..." not in ...class_list
+   ```
+
+   The fixed-sleep + immediate-state-check pattern is brittle for interaction-driven async state changes (CSS transitions, popup close, carousel auto-advance, AJAX-driven DOM updates). It produced the IESBUILD-247 false-negative (popup actually closed but assertion fired before the close transition completed).
+
+   **Fix to suggest:** migrate to Playwright's retrying `expect(...)` form per `visual-repro.md` §8 sub-section "Async state assertions":
+   ```python
+   from playwright.sync_api import expect
+   expect(popup).to_be_hidden(timeout=10000)
+   expect(menu).to_be_visible(timeout=10000)
+   expect(carousel.locator(".active-item")).to_have_text("02", timeout=10000)
+   ```
+
+   **Carve-out — do NOT flag legitimate uses of `wait_for_timeout`:**
+   - `wait_for_timeout(100)` (or similar small sleep) **immediately after `page.add_style_tag(...)`** — CSS paint settlement before assertion, not the anti-pattern.
+   - `wait_for_timeout` **inside Jenkins poll loops, network-idle waits, or other non-assertion contexts** — different purpose.
+   - `wait_for_timeout` **followed by a retrying `expect(...)`** — fine; the `expect` handles the asynchrony.
+
+   The anti-pattern is specifically `wait_for_timeout(N)` followed within ~5 non-blank lines by an `is_visible()` / `class_list` / `text_content() ==` check **inside an `assert_bug_*` function or its immediately-preceding `reproduce()` body**. Anything else is out of scope for this check.
+
 The reviewer uses the existing JSON output schema; new findings have `file="repro.py"`.
 
 If `repro.py` is absent (gate didn't fire, or skill skipped), no extra checks needed — review proceeds as usual.

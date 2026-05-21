@@ -6,7 +6,17 @@ Engineering feedback items deferred from the v1.13 batch, pending a future plann
 
 ## Item 19 — assert_bug_fixed produces false negatives on transition-based UI changes
 
-**Status:** Open. Surfaced by IESBUILD-247 (2026-05-21).
+**Status:** Sub-fixes (a) and (d) landed in v1.13.2 (`<follow-up commit>`). Sub-fixes (b) and (c) deferred — add when a real ticket needs them. Surfaced by IESBUILD-247 (2026-05-21).
+
+**What landed in v1.13.2:**
+- (a) `visual-repro.md` §8's "`assert_bug_fixed(page)` — inverse assertion" section now includes a dedicated "Async state assertions" sub-section that prescribes Playwright's retrying `expect(...).to_be_hidden(timeout=10000)` / `to_be_visible(timeout=10000)` / `to_have_class(...)` / `to_have_text(...)` patterns for interaction-driven async state changes. Default timeout 10 s covers Bootstrap fades (~500 ms), modal animations (~300 ms), and 5 s auto-advance carousels with headroom. Carve-out documents legitimate `wait_for_timeout` uses (CSS paint settle after `add_style_tag`, Jenkins polls, network-idle waits). Cross-referenced from §3 so `assert_bug_reproduced` gets the same guidance symmetrically.
+- (d) `code-reviewer.md` "Visual-repro invariants" section now has invariant 6: scan inside `assert_bug_*` functions for the `wait_for_timeout(N)` + immediate `is_visible()` / `class_list` / `text_content()==` anti-pattern. WARNING-level finding suggesting migration to retrying `expect`. Scoped to assertion functions only; legitimate `wait_for_timeout` uses are explicitly carved out.
+
+**What's still deferred (revisit when a ticket needs them):**
+- (b) Auto-advancing UI explicit cycle-length wait. `expect(...).to_have_text(..., timeout=10000)` already covers IESBUILD-232's 5 s carousel because the 10 s default ≥ one cycle + headroom. Sub-fix (a) subsumes (b) for the auto-advance case until proven otherwise.
+- (c) Multi-signal verification (aria-expanded + display + visibility — at least 2 of 3). Useful when retrying `expect` proves insufficient for some specific class of failure; not needed yet.
+
+**Original problem statement and failure case (preserved for context):**
 
 **Problem.** The Phase B `assert_bug_fixed` Playwright assertion at WORKFLOW.md step 12b-bis can return false-negative — reporting the bug as still present when it has actually been fixed — for UI changes that involve CSS transitions or animations. The Core PR gate (item 12) then blocks a legitimately working fix.
 
