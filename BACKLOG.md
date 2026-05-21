@@ -4,6 +4,39 @@ Engineering feedback items deferred from the v1.13 batch, pending a future plann
 
 ---
 
+## Item 21 — `agent:retry` Jira label for operator-driven retry of blocked tickets
+
+**Status:** Open. Surfaced 2026-05-21 in conversation about IESBUILD-232's Phase A Jenkins-permission failure.
+
+**Problem.** When a Symphony run blocks (writes `AGENT_DONE = blocked*`), the workspace's `AGENT_DONE` file makes Symphony's preflight refuse every subsequent dispatch — even after the operator has fixed the underlying issue and re-applied `agent:todo`. The only way to retry today is **shell access to the Symphony host**: `mv ~/symphony_workspaces/<TICKET> ~/symphony_workspaces/<TICKET>.old-<reason>`. This is friction for any operator who doesn't have / isn't using shell access to the host.
+
+**Concrete failure case.** IESBUILD-232 today: agent blocked because `openclawautomation` had lost Jenkins permission to the Create Dev Site job. After permission was restored, no operator-facing way existed to tell Symphony "retry now" — the workspace `AGENT_DONE` would have blocked the next dispatch silently. The current retry workflow assumes the operator can SSH/local-shell into the Symphony host. Many real Compucorp operators (product, QA, ticket triage) cannot or should not need to.
+
+**Proposed solution.** Single new Jira label `agent:retry`. Symphony's orchestrator, on each Jira poll, additionally fetches tickets with this label. For each:
+
+1. **If the workspace exists and contains `AGENT_DONE`:** rename it to `<workspace>.old-retry-<ISO8601-timestamp>` (preserves forensic state, mirrors operator convention).
+2. **Remove the `agent:retry` label** via the Atlassian MCP (idempotency — same operator + same label later does another retry, not a no-op).
+3. **Leave `agent:todo` alone:** if it's on, the next standard poll cycle will pick up the ticket. If it's off, the operator needs to add it (manual signal of intent).
+4. **Log the retry decision** so the dashboard can show "Last retried at \<timestamp\> by \<operator\>" — operator-visible audit trail.
+
+**Open questions for v1.14 plan stage:**
+
+- Should `agent:retry` work even when `AGENT_DONE` indicates `success-*`? Probably yes — operator might want to redo work (the previous run shipped a wrong fix, see backlog item 17). Default: yes, retry regardless of prefix.
+- Should the agent-side workflow also auto-remove `agent:retry` if it ever encounters it during a run (defensive)? Probably yes — keeps the label transient.
+- Permissions: should `agent:retry` require operator confirmation if the ticket has `agent:blocked` (from item 18 nuance work) vs. `success-*`? Conservative answer: no extra friction; the operator has already chosen to apply the label.
+- Audit / abuse: should there be a cooldown to prevent runaway retry storms (e.g., if a Jira automation accidentally applies the label in a loop)? Probably yes — minimum 5 min between retry-triggered dispatches for the same ticket.
+
+**Implementation surface (rough estimate):**
+
+- `elixir/lib/symphony_elixir/orchestrator.ex` — new poll branch + retry-trigger code (~50 lines)
+- `elixir/lib/symphony_elixir/jira/client.ex` — new JQL for `agent:retry` candidates (~10 lines)
+- `WORKFLOW.md` — document the operator's retry workflow + the new label semantics (~20 lines)
+- Tests in `tests/elixir/` — coverage of the trigger path (~30 lines)
+
+**Action:** add to v1.14 planning batch. Useful in conjunction with the `agent:blocked` label proposal (which makes blocked tickets discoverable on the Jira board; `agent:retry` is the one-click resolution path from that same board).
+
+---
+
 ## Item 19 — assert_bug_fixed produces false negatives on transition-based UI changes
 
 **Status:** Sub-fixes (a) and (d) landed in v1.13.2 (commit `a85dcb4`). Sub-fixes (b) and (c) deferred — add when a real ticket needs them. Surfaced by IESBUILD-247 (2026-05-21).
