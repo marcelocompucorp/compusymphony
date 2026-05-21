@@ -114,7 +114,7 @@ Several layers, in increasing order of effort:
 - **Orchestrator-side enforcement.** Symphony Elixir process polls `<workspace>/AGENT_DONE` and SIGTERMs the agent on appearance. This is the load-bearing fix for nuance 3 (process hang). Not implemented yet — relying on the agent honouring step 15's "stop" prose discipline. If the next blocked-or-recover case shows another hang, this becomes priority.
 - **Broader Phase B trigger cap.** Today's one-retry cap is in the recovery paragraph; a hard orchestrator-side or repro-helper-side cap would catch any agent that ignores the prose cap. Tied to BACKLOG item 19's gate-reliability work.
 
-Note that v1.13.3 (commit `<TBD>`) introduced the `agent:blocked` label, which addresses the *operator-visibility* aspect of nuance 3 (blocked tickets are now filterable from the Jira board). The orchestrator-side `SIGTERM`-on-AGENT_DONE enforcement remains the only fix for the *agent-keeps-running-after-AGENT_DONE-write* aspect; defer until evidence of that recurring under Fix A.
+Note that v1.13.3 (commit `e4a921f`) introduced the `agent:blocked` label, which addresses the *operator-visibility* aspect of nuance 3 (blocked tickets are now filterable from the Jira board). The orchestrator-side `SIGTERM`-on-AGENT_DONE enforcement remains the only fix for the *agent-keeps-running-after-AGENT_DONE-write* aspect; defer until evidence of that recurring under Fix A.
 
 **Reference incident:** PR `compu_bs5#667` is open and correct despite the messy run. The agent's own diagnostic in Jira comment `#269946` correctly identified the `$(document).once(...)` Drupal 7 issue; the recovery commit `19e7e61` (closure-flag pattern) fixed it. Net outcome was good; only the bookkeeping was broken.
 
