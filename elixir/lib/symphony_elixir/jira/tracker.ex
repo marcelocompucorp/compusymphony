@@ -54,6 +54,11 @@ defmodule SymphonyElixir.Jira.Tracker do
     client_module().update_issue_state(issue_id, state_name)
   end
 
+  @spec upload_attachment(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def upload_attachment(issue_id, file_path, mime_type \\ "image/png") do
+    client_module().upload_attachment(issue_id, file_path, mime_type)
+  end
+
   defp client_module do
     Application.get_env(:symphony_elixir, :jira_client_module, Client)
   end

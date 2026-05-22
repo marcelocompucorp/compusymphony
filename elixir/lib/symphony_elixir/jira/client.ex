@@ -46,6 +46,33 @@ defmodule SymphonyElixir.Jira.Client do
     end
   end
 
+  @spec upload_attachment(String.t(), String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def upload_attachment(issue_key, file_path, mime_type \\ "image/png", opts \\ [])
+      when is_binary(issue_key) and is_binary(file_path) and is_binary(mime_type) do
+    with {:ok, auth} <- build_auth(),
+         {:ok, base_url} <- require_base_url() do
+      request_fun = Keyword.get(opts, :request_fun, &default_request_fun/1)
+      url = "#{base_url}/rest/api/3/issue/#{issue_key}/attachments"
+
+      case request_fun.(%{method: :post_multipart, url: url, auth: auth, file_path: file_path, mime_type: mime_type}) do
+        {:ok, %{status: status, body: [%{"filename" => name} | _]}} when status in [200, 201] ->
+          {:ok, name}
+
+        {:ok, %{status: status, body: []}} when status in [200, 201] ->
+          Logger.error("Jira upload_attachment returned empty list issue=#{issue_key}")
+          {:error, :empty_attachment_response}
+
+        {:ok, %{status: status} = response} ->
+          Logger.error("Jira upload_attachment failed status=#{status} #{jira_error_context(response)}")
+          {:error, {:jira_api_status, status}}
+
+        {:error, reason} ->
+          Logger.error("Jira upload_attachment request failed: #{inspect(reason)}")
+          {:error, {:jira_api_request, reason}}
+      end
+    end
+  end
+
   @spec create_comment(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
   def create_comment(issue_key, body, opts \\ []) when is_binary(issue_key) and is_binary(body) do
     with {:ok, auth} <- build_auth(),
@@ -340,6 +367,17 @@ defmodule SymphonyElixir.Jira.Client do
     Req.post(url, headers: jira_headers(auth), json: body, connect_options: [timeout: 30_000])
   end
 
+  defp default_request_fun(%{method: :post_multipart, url: url, auth: auth, file_path: file_path, mime_type: mime_type}) do
+    filename = Path.basename(file_path)
+    file_content = File.read!(file_path)
+
+    multipart = [
+      {:file, file_content, {"form-data", [{"name", "file"}, {"filename", filename}]}, [{"Content-Type", mime_type}]}
+    ]
+
+    Req.post(url, headers: attachment_headers(auth), multipart: multipart, connect_options: [timeout: 30_000])
+  end
+
   defp jira_headers({:basic, email, token}) do
     encoded = Base.encode64("#{email}:#{token}")
 
@@ -347,6 +385,18 @@ defmodule SymphonyElixir.Jira.Client do
       {"Authorization", "Basic #{encoded}"},
       {"Accept", "application/json"},
       {"Content-Type", "application/json"}
+    ]
+  end
+
+  # Attachment uploads must NOT include Content-Type: application/json —
+  # Jira requires X-Atlassian-Token: no-check to bypass the XSRF check.
+  defp attachment_headers({:basic, email, token}) do
+    encoded = Base.encode64("#{email}:#{token}")
+
+    [
+      {"Authorization", "Basic #{encoded}"},
+      {"Accept", "application/json"},
+      {"X-Atlassian-Token", "no-check"}
     ]
   end
 

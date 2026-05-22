@@ -67,6 +67,9 @@ defmodule SymphonyElixir.Memory.Tracker do
     :ok
   end
 
+  @spec upload_attachment(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def upload_attachment(_issue_id, _file_path, _mime_type \\ "image/png"), do: {:error, :not_supported}
+
   defp configured_issues do
     Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
   end

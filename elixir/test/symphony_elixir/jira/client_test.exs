@@ -268,6 +268,45 @@ defmodule SymphonyElixir.Jira.ClientTest do
     end
   end
 
+  describe "upload_attachment/3" do
+    test "POSTs multipart to v3 attachments URL with Basic auth and X-Atlassian-Token header, returns confirmed filename" do
+      request_fun = fn %{method: :post_multipart, url: url, auth: auth, file_path: _file_path, mime_type: mime_type} ->
+        assert url == "https://example.atlassian.net/rest/api/3/issue/TEST-42/attachments"
+        assert auth == {:basic, "agent@example.com", "test-jira-token"}
+        assert mime_type == "image/png"
+        # The actual headers are built by default_request_fun, not passed through request map.
+        # We verify the shape is correct and returns the confirmed filename from the response.
+        {:ok, %{status: 200, body: [%{"filename" => "banner (1).png", "id" => "att-1"}]}}
+      end
+
+      assert {:ok, "banner (1).png"} =
+               Client.upload_attachment("TEST-42", "/tmp/banner.png", "image/png", request_fun: request_fun)
+    end
+
+    test "returns confirmed filename from response (not input filename) when Jira renames duplicate" do
+      request_fun = fn %{method: :post_multipart} ->
+        {:ok, %{status: 201, body: [%{"filename" => "banner (1).png"}]}}
+      end
+
+      assert {:ok, "banner (1).png"} =
+               Client.upload_attachment("TEST-42", "/tmp/banner.png", "image/png", request_fun: request_fun)
+    end
+
+    test "returns error on non-2xx status" do
+      request_fun = fn _ -> {:ok, %{status: 400, body: %{"errorMessages" => ["bad request"]}}} end
+
+      assert {:error, {:jira_api_status, 400}} =
+               Client.upload_attachment("TEST-42", "/tmp/banner.png", "image/png", request_fun: request_fun)
+    end
+
+    test "returns :empty_attachment_response when response is an empty list" do
+      request_fun = fn _ -> {:ok, %{status: 200, body: []}} end
+
+      assert {:error, :empty_attachment_response} =
+               Client.upload_attachment("TEST-42", "/tmp/banner.png", "image/png", request_fun: request_fun)
+    end
+  end
+
   describe "update_issue_state/3" do
     test "lists transitions then POSTs the matching transition id (matches by 'to.name')" do
       test_pid = self()

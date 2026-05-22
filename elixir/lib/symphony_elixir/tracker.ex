@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Tracker do
   @callback fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
+  @callback upload_attachment(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
 
   @spec project_identity() :: String.t() | nil
   def project_identity, do: adapter().project_identity()
@@ -42,6 +43,11 @@ defmodule SymphonyElixir.Tracker do
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     adapter().update_issue_state(issue_id, state_name)
+  end
+
+  @spec upload_attachment(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def upload_attachment(issue_id, file_path, mime_type \\ "image/png") do
+    adapter().upload_attachment(issue_id, file_path, mime_type)
   end
 
   @spec adapter() :: module()

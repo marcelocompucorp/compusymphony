@@ -48,6 +48,9 @@ defmodule SymphonyElixir.GitHub.Tracker do
     client_module().update_issue_state(issue_id, state_name)
   end
 
+  @spec upload_attachment(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def upload_attachment(_issue_id, _file_path, _mime_type \\ "image/png"), do: {:error, :not_supported}
+
   defp client_module do
     Application.get_env(:symphony_elixir, :github_client_module, Client)
   end
