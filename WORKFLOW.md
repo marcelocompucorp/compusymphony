@@ -265,7 +265,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
 ## Screenshot embedding in Jira comments
 
-**When to apply:** Any time the agent posts a Jira comment AND has a screenshot file available (e.g. `before.png`, `after.png`, or any `.png` in the workspace), use the two-step REST API workflow below to embed it inline. If no screenshot is available, post the comment normally via the Atlassian MCP as usual.
+**When to apply:** Any time the agent posts a block/failure Jira comment OR the step 13 PR-link comment, and a screenshot file is available (`before.png`, `after.png`, or any workspace PNG), use the two-step REST API workflow below to embed it inline. If no screenshot is available, post the comment normally via the Atlassian MCP as usual.
 
 **Why not MCP:** The Atlassian MCP `addCommentToJiraIssue` tool uses ADF format and cannot embed inline images from attachments. Screenshot embedding requires two direct REST API calls.
 
@@ -277,7 +277,7 @@ curl -s -X POST \
   -F "file=@/path/to/screenshot.png;type=image/png" \
   "${JIRA_URL%/}/rest/api/3/issue/<KEY>/attachments"
 ```
-Parse the `filename` field from the **first element** of the JSON array response — use this confirmed filename, not the input filename (Jira may rename duplicates on re-upload).
+Parse the `filename` field from the **first element** of the JSON array response — use this confirmed filename, not the input filename (Jira may rename duplicates on re-upload). _Jira renames collision filenames to `name-N.ext` (e.g. `before-1.png`), which is URL-safe. If your source file has spaces or special characters in its name, rename it to a safe filename (e.g. `before.png`) before uploading._
 
 **Step 2 — Post the comment via the REST API v2 endpoint** (NOT the MCP, NOT v3 ADF) using wiki markup:
 ```bash
@@ -893,6 +893,8 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
    > Core PR (the actual fix): `<inlineCard: https://github.com/compucorp/<core>/pull/<N>>`
    >
    > Client QA branch: propagation failed (`git apply --3way` conflict — vendored copy has diverged from core). Manual action: (a) cherry-pick the core commit onto a fresh `qa-{{ issue.identifier }}` branch resolving the conflict by hand, or (b) wait for the core PR to merge into the next Compuclient release and the fix will propagate automatically.
+
+   _If `after.png` was captured during Phase B, embed it inline using the screenshot embedding workflow above. Upload `after.png` as an attachment first, then include `!<confirmed_filename>|width=800!` at the end of the comment body after the PR link text. Use the v2 REST API endpoint for this comment (not the Atlassian MCP), since the wiki markup embedding requires v2. Note: the deduplication guard still applies — check for the PR URL in existing comments before posting._
 
 14. **Resolve the labels** on the ticket via the Atlassian MCP.
 
