@@ -243,7 +243,7 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 - Do step 12a (dispatch the reviewer subagent and save `review-result-r<N>.json`) — we want to validate the reviewer path works.
 - Do step 12b-bis **fully (both Phase A and Phase B)** if the repo is in `SITE_DEPLOYABLE_REPOS` — we want to validate the entire two-phase dev-site path. **Pass `lifespan=1` to Phase A** (`trigger_dev_site`) so dry-run sites evaporate fast and don't accumulate. Phase B (`trigger_release_devsite`) has no lifespan parameter and always runs to completion. This means dry-run produces **two** Jenkins triggers (count=2 in the audit) and both `before.png` and `after.png` should land in `.agent-artifacts/`. The Jenkins triggers are real production side effects, but the user opted into autonomous dev-site provisioning; dry-run E2E validation has no value if we skip the new step.
 - **Do NOT run `gh pr create`** (skip 12c entirely). No PR is to be opened.
-- **Suppress ALL agent-initiated Jira writes in dry-run mode** — no comments, label mutations, status transitions, worklogs, or issue links of any kind, with ONE exception (the success-path label removal below). This is a categorical rule, not an enumeration: any new agent-initiated Jira write added to the Routine in future MUST also be suppressed under dry-run. The currently-known write paths covered: step 13 PR-link comment, step 1a triage-conflict comment, Blockers-section block comment, invariant 1's allowlist-miss comment, step 3b's multi-site / zero-site / ambiguous-images.php / failed-rev-parse comments, any TOOLS.md gated-request comment (e.g. Loki production approval, AWS role-ARN request), and any future comment-on-exit path. The operator triggered the dry-run, has the workspace + `<workspace>/dry-run-summary.md` + `<workspace>/AGENT_DONE` as the complete audit trail, and can inspect everything directly. Jira viewers (other engineers, clients) MUST NOT see test-run artifacts.
+- **Suppress ALL agent-initiated Jira writes in dry-run mode** — no comments, label mutations, status transitions, worklogs, or issue links of any kind, with ONE exception (the success-path label removal below). This is a categorical rule, not an enumeration: any new agent-initiated Jira write added to the Routine in future MUST also be suppressed under dry-run. The currently-known write paths covered: step 13 PR-link comment, step 1a triage-conflict comment, Blockers-section block comment, invariant 1's allowlist-miss comment, step 3b's multi-site / zero-site / ambiguous-images.php / failed-rev-parse comments, any TOOLS.md gated-request comment (e.g. Loki production approval, AWS role-ARN request), attachment uploads (the prerequisite upload step for screenshot-embedding comments is also a Jira write and must be suppressed in dry-run mode — skip both the upload and the wiki-markup comment, falling back to a plain text-only MCP comment if a Jira write is permitted, or omitting the comment entirely if not), and any future comment-on-exit path. The operator triggered the dry-run, has the workspace + `<workspace>/dry-run-summary.md` + `<workspace>/AGENT_DONE` as the complete audit trail, and can inspect everything directly. Jira viewers (other engineers, clients) MUST NOT see test-run artifacts.
 - **Label handling depends on outcome:**
   - **Dry-run SUCCESS** (reviewer approved at any round): remove BOTH `agent:todo` AND `agent:dry-run` labels via the Atlassian MCP. **This is the only Jira mutation permitted in dry-run mode**, and exists to prevent the post-completion retry storm.
   - **Dry-run BLOCKED** (reviewer rejected at N=3, or any other blocker per step 12b / the Blockers section): leave BOTH labels ON for human triage. The block reason goes into `<workspace>/dry-run-summary.md` ONLY — NOT into a Jira comment. If the operator wants to share the block reason on Jira, they post it manually after reviewing the workspace.
@@ -262,6 +262,34 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 - Write `<workspace>/AGENT_DONE` with content: `dry-run <ISO-8601-timestamp> {{ issue.identifier }}`
 
 Invariants 1–11 still apply in full. The only thing being skipped is the external side-effect emission.
+
+## Screenshot embedding in Jira comments
+
+**When to apply:** Any time the agent posts a Jira comment AND has a screenshot file available (e.g. `before.png`, `after.png`, or any `.png` in the workspace), use the two-step REST API workflow below to embed it inline. If no screenshot is available, post the comment normally via the Atlassian MCP as usual.
+
+**Why not MCP:** The Atlassian MCP `addCommentToJiraIssue` tool uses ADF format and cannot embed inline images from attachments. Screenshot embedding requires two direct REST API calls.
+
+**Step 1 — Upload the screenshot as a Jira attachment:**
+```bash
+curl -s -X POST \
+  -H "Authorization: Basic $(echo -n "$JIRA_USER:$JIRA_TOKEN" | base64)" \
+  -H "X-Atlassian-Token: no-check" \
+  -F "file=@/path/to/screenshot.png;type=image/png" \
+  "${JIRA_URL%/}/rest/api/3/issue/<KEY>/attachments"
+```
+Parse the `filename` field from the **first element** of the JSON array response — use this confirmed filename, not the input filename (Jira may rename duplicates on re-upload).
+
+**Step 2 — Post the comment via the REST API v2 endpoint** (NOT the MCP, NOT v3 ADF) using wiki markup:
+```bash
+curl -s -X POST \
+  -H "Authorization: Basic $(echo -n "$JIRA_USER:$JIRA_TOKEN" | base64)" \
+  -H "Content-Type: application/json" \
+  "${JIRA_URL%/}/rest/api/2/issue/<KEY>/comment" \
+  -d '{"body": "...wiki markup text...\n\n!<confirmed_filename>|width=800!\n\n...more text..."}'
+```
+Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpoint accepts wiki markup (plain text with `!filename|width=N!` directives); the `v3` endpoint only accepts ADF and cannot render inline attachment images.
+
+**Credentials:** Use `$JIRA_URL` for the base URL (strip trailing slash with `${JIRA_URL%/}`), `$JIRA_USER` and `$JIRA_TOKEN` for Basic auth — same credentials used throughout.
 
 ## Routine
 
@@ -508,7 +536,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
     If `after.png` was captured (§8 CSS-only or 12b-bis Phase B), PR `## After` references the dev-site URL or notes the workspace capture.
 
-    **Reproduction gate.** If exit non-zero OR `before.png` missing AND the two-condition gate at the top of step 10 was met (staging URL resolvable + host passes `assert_staging_host`): **STOP.** Do NOT proceed to step 11 or 12. Before stopping, try the small-element fallback: if the bug description references an icon, badge, narrow button, or any element below ~40px, re-run with `device_scale_factor=3` as described in `prompts/visual-repro.md` §9c. If §9c reproduces the bug, continue normally. If §9c also fails to fire `assert_bug_reproduced`: post a Jira comment via the Atlassian MCP explaining (a) the URL tested, (b) the reproduction steps attempted, (c) that `assert_bug_reproduced` did not fire even at 3× DPI. Proceed to step 15 with prefix `blocked-verify`.
+    **Reproduction gate.** If exit non-zero OR `before.png` missing AND the two-condition gate at the top of step 10 was met (staging URL resolvable + host passes `assert_staging_host`): **STOP.** Do NOT proceed to step 11 or 12. Before stopping, try the small-element fallback: if the bug description references an icon, badge, narrow button, or any element below ~40px, re-run with `device_scale_factor=3` as described in `prompts/visual-repro.md` §9c. If §9c reproduces the bug, continue normally. If §9c also fails to fire `assert_bug_reproduced`: post a Jira comment via the Atlassian MCP explaining (a) the URL tested, (b) the reproduction steps attempted, (c) that `assert_bug_reproduced` did not fire even at 3× DPI. Proceed to step 15 with prefix `blocked-verify`. _If `before.png` was captured before the gate failed, embed it inline using the screenshot embedding workflow above._
 
     If the gate at the top of step 10 was NOT met (no staging URL resolvable, or host did not pass `assert_staging_host`): document in PR `## Comments` ("Visual repro skipped: <reason>") and proceed with `## Manual verification required` in the PR body.
 
@@ -690,7 +718,7 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
 
    Run `visual-repro.md §9a`: reproduce the bug → `assert_bug_reproduced` → capture `before.png`. Save to `<workspace>/before.png` and copy to `repo/.agent-artifacts/{{ issue.identifier }}/before.png`. Commit on the agent branch (second commit after the fix commit — intentional append post-approval).
 
-   **Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire on the dev site after the broken tag was deployed. Proceed to step 15 with prefix `blocked-verify`. A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped.
+   **Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire on the dev site after the broken tag was deployed. Proceed to step 15 with prefix `blocked-verify`. _If `before.png` was captured, embed it inline using the screenshot embedding workflow above._ A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped.
 
    **A6. Clean up the before tag:**
    ```bash
@@ -808,6 +836,8 @@ Invariants 1–11 still apply in full. The only thing being skipped is the exter
    | `assert_bug_reproduced` doesn't fire | **STOP.** For sub-40px element bugs (icons, badges, narrow borders), retry once at `device_scale_factor=3` per `visual-repro.md` §9c BEFORE stopping. If §9c also fails: post Jira comment (URL tested, steps attempted, assertion did not fire even at 3× DPI). Proceed to step 15 with prefix `blocked-verify`. Do NOT open PR. |
    | Phase B FAILURE / timeout / cap | **STOP.** Post Jira comment via the Atlassian MCP naming the Jenkins build URL and likely cause. Proceed to step 15 with prefix `blocked-verify`. Apply the `agent:blocked` label (see step 14). |
    | `assert_bug_fixed` fails on dev site | Attempt recovery (diagnose + commit fix + re-trigger Phase B) **at most once**, per the recovery paragraph above. If the second attempt also fails: **Block PR.** Proceed to step 15 with prefix `blocked-verify`. Jira blocker comment. |
+
+   _For all failure-mode block comments: if a screenshot (`before.png`, `after.png`) was captured before the failure point, embed it inline using the screenshot embedding workflow above._
 
    **Orphan-tag note:** A6 and B4 push-delete the Jenkins tags after each phase. If the agent crashes or is interrupted between the tag push and the delete, `agent-<TICKET>-before` and/or `agent-<TICKET>-fix` tags will leak on the remote. They are harmless (lightweight tags; no CI triggers on them) but accumulate over time. If you notice orphan `agent-*` tags when inspecting a repo, delete them manually with `git push origin --delete <tag-name>`.
 
