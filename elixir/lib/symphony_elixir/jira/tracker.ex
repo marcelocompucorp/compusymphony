@@ -1,6 +1,11 @@
 defmodule SymphonyElixir.Jira.Tracker do
   @moduledoc """
   Jira-backed tracker implementation.
+
+  Note: `upload_attachment/3` is groundwork for orchestrator-level use.
+  The agent's WORKFLOW.md currently instructs the Claude agent to upload
+  attachments directly via curl. This function is available for future
+  orchestrator wiring if needed.
   """
 
   @behaviour SymphonyElixir.Tracker
