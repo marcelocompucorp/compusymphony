@@ -305,6 +305,18 @@ defmodule SymphonyElixir.Jira.ClientTest do
       assert {:error, :empty_attachment_response} =
                Client.upload_attachment("TEST-42", "/tmp/banner.png", "image/png", request_fun: request_fun)
     end
+
+    # NOTE: Bypass is not in deps, so we cannot exercise the real Req.post path in tests.
+    # The following test exercises the default_request_fun path for the file-read error
+    # without making a real HTTP call — the file read fails before reaching Req.post.
+    test "returns {:error, {:file_read, reason}} when file does not exist (default_request_fun path)" do
+      # Do NOT inject request_fun — let default_request_fun run.
+      # The file doesn't exist, so File.read/1 returns {:error, :enoent} and we
+      # never reach Req.post. This is the only default_request_fun path we can
+      # cover without a live Jira token or a Bypass server.
+      assert {:error, {:jira_api_request, {:file_read, :enoent}}} =
+               Client.upload_attachment("TEST-42", "/nonexistent/path/screenshot.png", "image/png")
+    end
   end
 
   describe "update_issue_state/3" do

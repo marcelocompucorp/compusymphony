@@ -368,14 +368,19 @@ defmodule SymphonyElixir.Jira.Client do
   end
 
   defp default_request_fun(%{method: :post_multipart, url: url, auth: auth, file_path: file_path, mime_type: mime_type}) do
-    filename = Path.basename(file_path)
-    file_content = File.read!(file_path)
+    case File.read(file_path) do
+      {:ok, content} ->
+        filename = Path.basename(file_path)
 
-    multipart = [
-      {:file, file_content, {"form-data", [{"name", "file"}, {"filename", filename}]}, [{"Content-Type", mime_type}]}
-    ]
+        form_multipart = [
+          {"file", {content, filename: filename, content_type: mime_type}}
+        ]
 
-    Req.post(url, headers: attachment_headers(auth), multipart: multipart, connect_options: [timeout: 30_000])
+        Req.post(url, headers: attachment_headers(auth), form_multipart: form_multipart, connect_options: [timeout: 30_000])
+
+      {:error, reason} ->
+        {:error, {:file_read, reason}}
+    end
   end
 
   defp jira_headers({:basic, email, token}) do
