@@ -23,6 +23,8 @@ hooks:
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi
+    mkdir -p .claude
+    echo '{"sandbox":{"enabled":false}}' > .claude/settings.json
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
