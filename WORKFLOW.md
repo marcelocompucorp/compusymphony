@@ -441,6 +441,7 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
    **For core-rooted bugs (classified at step 3.2):** confirm via `grep -rn`:
    1. The new behavior you're about to add in `./repo-core/` does NOT already exist there in a separate location. If it does, extend the existing handler instead of writing parallel code.
    2. The same behavior does NOT exist as a per-site re-implementation in `./repo-client/sites/all/themes/custom/*/` or `./repo-client/sites/all/modules/{custom,features}/*/` — if it does, the per-site implementation can be removed once the core fix ships.
+   3. **Peer-handler audit.** If the new behavior binds to a generic Bootstrap selector that subthemes commonly rebind (`.navbar-toggler`, `.accordion-button`, `.dropdown-toggle`, `.modal`, `.collapse`, etc.), grep `./repo-client/sites/all/themes/custom/*/js/` and `./repo-client/sites/all/modules/{custom,features}/*/` for existing `$(selector).once(...)` or `$(selector).on(...)` bindings on the same selector. If any exist, the new behavior must either (a) supersede them — with corresponding subtheme strips applied in the QA-branch commit per step 11a — or (b) coordinate with them explicitly. Multiple handlers with different visibility logic on the same DOM element race; whichever runs last wins. The IESBUILD-247 follow-up case: the new `compu_bs5/js/header-popups.js` `navbarUserLoginMenuSync` ran alongside two IES `.navbar-toggler` handlers in `login-popup.js` and `logout-popup.js` (each using different `.once()` keys and different visibility logic), and Phase B verification passed by coincidence rather than by robust ownership.
 
    **For client-exclusive bugs (classified at step 3.2):** confirm via `grep -rn`:
    1. The new behavior you're about to add in `./repo-client/sites/all/themes/custom/<site>/` or equivalent does NOT have an equivalent handler in `./repo-client/profiles/compuclient/...` (vendored parent code).
@@ -546,6 +547,8 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
 11. **Commit and push.**
 
+   **Single commit per PR (default).** Every Symphony PR should land as a single commit. If the implementation produced multiple commits (e.g. a TDD test commit + an implementation commit, or a follow-up linter-fix commit on the same branch), squash them locally before push via `git reset --soft <base>` + recommit, so the branch presented for review has one commit with the full rationale in its body. This is what Compucorp reviewers (Ayush, Hitesh) consistently ask for; baking it in saves the round-trip.
+
    **Linter config fixes in the same commit (v1.12+):** If step 9a revealed a config gap (e.g. missing global in `.eslintrc.json`, missing rule in `phpcs.xml`) that caused errors on files outside your diff, include the config fix in the same commit as your code fix. Scope creep of this kind is allowed only when:
    - The gap directly prevents the linter from passing on your changed files, AND
    - The fix is mechanical (add a global, add an ignore rule) — not a policy change.
@@ -601,6 +604,8 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
         ```
         If 3way succeeds: `git -C ./repo-client add "$APPLY_DIR"`, commit, set `PROPAGATION_STATUS=context-resolved`. Note in Jira comment later.
         If 3way also fails: skip QA branch; set `PROPAGATION_STATUS=skipped`; note `AGENT_DONE` will be `success-core-only` if everything else passes.
+
+   3a. **Cross-repo cleanup completeness.** If the core fix supersedes inline JS or `Drupal.behaviors` code that the client's subthemes also re-implement, grep `./repo-client/sites/all/themes/custom/*/js/` and `./repo-client/sites/all/modules/{custom,features}/*/` for every handler touching the **same DOM surface** the new core behavior now owns (same selector OR same popup/dropdown container ID OR same toggle-source class). Strip them all in the QA-branch commit — not just the most obvious duplicate. The IESBUILD-247 case: the agent stripped one `.toggle()` line in IES `logout-popup.js` but left two unrelated `.navbar-toggler` `.once()` bindings (in `login-popup.js` and `logout-popup.js`) attached to the same `.navbar-user-login-menu` element that the new core `navbarUserLoginMenuSync` behavior now owns. The orphaned handlers raced with the new behavior; the human reviewer caught it. Use `grep -rn` with the selectors / element IDs the core diff touches, not just an "obvious duplicate" line-level search.
 
    4. When `PROPAGATION_STATUS != skipped`: push the QA branch:
       ```bash

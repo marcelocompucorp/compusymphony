@@ -131,6 +131,7 @@ For Drupal 7 + CiviCRM code specifically:
   per context). Exception: when `context` is always `document` by design and
   the handler is document-level — document the reasoning.
 - **Coordinator behavior (BLOCKER):** A coordinator is any new `Drupal.behaviors.*` implementation (or document-level jQuery handler) whose primary effect is to close, hide, show, or otherwise manage DOM elements whose interactive lifecycle (open/close/toggle) is owned by **another** component — e.g., a behavior that calls `.hide()` or `.toggle()` on popup elements that `compu_bs5/includes/menu.inc` opens. Coordinators are a **BLOCKER** regardless of classification. **Carve-out (not a coordinator):** a behavior that creates AND manages its own DOM elements is fine — e.g., a tooltip behavior that creates the tooltip node, attaches its own listeners, and hides it on outside-click is owning its full lifecycle, not coordinating someone else's. The diagnostic question is "who created and initially bound the element being managed?", not "does the behavior call `.hide()`?". State in the finding: (a) which selector/element the coordinator manages, (b) which file actually owns (creates + binds) that element's lifecycle, (c) what the correct fix is (fix the owner directly; if the owner is in `profiles/compuclient/...`, the bug should have been classified core-rooted — cross-reference §5a). The canonical failure is IESBUILD-247 PR #229: `menu-click-away.js` coordinating popup elements owned by `compu_bs5/includes/menu.inc`.
+- **Peer-handler conflict on shared DOM (WARNING):** Distinct from the coordinator anti-pattern above. When the core diff adds a new `Drupal.behaviors.*` that binds to a generic Bootstrap selector subthemes commonly rebind (`.navbar-toggler`, `.accordion-button`, `.dropdown-toggle`, `.modal`, `.collapse`), grep `sites/all/themes/custom/*/js/` and `sites/all/modules/{custom,features}/*/` in the client repo for existing `$(selector).once(...)` / `$(selector).on(...)` bindings on the same selector. If found, the new behavior must either supersede them (with corresponding subtheme strips in the QA-branch commit per WORKFLOW.md step 11a sub-step 3a) or coordinate with them explicitly. Multiple handlers with different visibility logic on the same DOM element race; whichever runs last wins. Phase B passing is not proof of robustness here. State in the finding: (a) the shared selector, (b) the conflicting subtheme handlers (file + `.once()` key), (c) the proposed resolution. Canonical failure: IESBUILD-247 — new `navbarUserLoginMenuSync` coexisted with IES `login-popup.js` (`navbar-toggle` key) and `logout-popup.js` (`navbar-toggle-button` key), each with different visibility logic on `.navbar-user-login-menu`.
 
 ### 5. Code standards (Compucorp shared-development-guide.md)
 
@@ -423,6 +424,20 @@ Detection — check ONE of these signals (in order of reliability):
   The Jira comment should explain why the client QA branch was omitted (3-way merge
   conflict or explicit skip). Operator action is documented. No finding needed from
   the reviewer.
+
+- **WARNING — incomplete cross-repo cleanup.** When the core diff removes or replaces
+  inline JS / `Drupal.behaviors` code that subthemes also re-implement, the QA-branch
+  diff must also strip every subtheme handler touching the **same DOM surface** the
+  new core behavior now owns — not just the most obvious duplicate. Cross-check the
+  QA-branch diff against the core diff: for each selector or element ID the new core
+  behavior binds, grep the QA-branch client-repo tree (`sites/all/themes/custom/*/js/`
+  and client modules) for remaining handlers on that same selector/ID. If any are
+  still attached, flag a `WARNING` naming each orphaned handler (file + `.once()` key
+  + selector). Canonical failure: IESBUILD-247 — agent stripped one `.toggle()` line
+  in IES `logout-popup.js` but left two `.navbar-toggler` `.once()` bindings (in
+  `login-popup.js` and `logout-popup.js`) attached to `.navbar-user-login-menu`,
+  which the new core `navbarUserLoginMenuSync` now owns. The orphaned handlers raced
+  with the new behavior; the human reviewer caught it.
 
 ## Output format
 
