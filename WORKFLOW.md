@@ -207,6 +207,8 @@ These override defaults; treat them as hard rules.
 
 10. **PII redaction when citing external observability data.** Several read-only credentials (SendGrid Mail Activity, MongoDB `compucorp.sites`, Loki stack logs) return responses that contain **end-user PII** — recipient email addresses, full names, sometimes contact comments. The full JSONL transcript of your run is persisted by the audit (`analyze-run.sh`) and visible to operators reviewing the run, and anything you paste into a PR description or Jira comment is permanent. When citing evidence from these sources: **redact recipient emails** (`r***@example.com`), do NOT paste contact names verbatim, do NOT include subject lines or message bodies. Quote only the structural evidence (timestamps, status codes, IDs) that supports the fix. See `prompts/TOOLS.md` §SendGrid for the canonical redaction pattern.
 
+11. **No ticket narrative in source.** In-source free-form comments (block or line) explain non-obvious behaviour the next reader of the code needs — a Drupal 7 quirk, a hook-ordering constraint, why a guard exists. They do NOT recount ticket history, cascade rationale, reviewer feedback, or the agent's reasoning process — that belongs in the commit message and PR description. If a comment starts with the ticket ID, paraphrases the PR `## Cause` section, or restates "what the user reported" — delete it. This rule does NOT apply to docblocks (PHPDoc `@param`/`@return`, JSDoc, etc.) — those remain required where the linter or convention demands them. (Recurring reviewer feedback from human engineers — most recently Ayush on `compucorp/ies#232`.)
+
 ## Required skills (invoke via the `Skill` tool, in order)
 
 The integration depends on these — do not skip:
