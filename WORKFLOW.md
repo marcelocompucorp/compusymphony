@@ -420,6 +420,35 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
 4. **Investigate with what fits the symptom.** Loki for logs, GitHub for recent changes, Netdata/Tempo/CloudWatch as relevant. Use `prompts/TOOLS.md` for credentials and access patterns. Don't run every tool — pick by signal.
 
+4a. **Data-state verification (when symptom is state-dependent).** Apply this step when the symptom is "entity not found / not displayed / condition not met / element missing" AND either (a) a generic page load does not reproduce it, OR (b) the bug description names a specific entity or record. If neither condition holds, skip to step 5.
+
+   **Resolve the RDS environment from the deployed hostname (step 3b's result):**
+   - `*.cc-staging.site` → use `$RDS_STAGING_*` env vars + `$RDS_JUMP_HOST_MAIN`
+   - `*.cc-test.site` or dev sites → use `$RDS_DEV_*` env vars + `$RDS_JUMP_HOST_MAIN`
+   - `*.civiplus.net` → use `$RDS_CIVIPLUS_*` + `$RDS_JUMP_HOST_CIVIPLUS` (only some clients have RDS access — if the DB is missing, post a Jira comment noting the gap and **STOP**)
+   - **Production or unknown host → STOP.** Post a Jira comment noting no RDS credentials exist for production hosts. Proceed to step 15 with prefix `blocked-data`.
+
+   **Look up the DB name from MongoDB** (key field: `env_vars.DRUPAL_DB_NAME`):
+   ```python
+   from pymongo import MongoClient; import os
+   client = MongoClient(f"mongodb://{os.environ['MONGO_USER']}:{os.environ['MONGO_PASSWORD']}@{os.environ['MONGO_HOST']}:{os.environ['MONGO_PORT']}/?authSource={os.environ['MONGO_AUTH_SOURCE']}")
+   site = client['compucorp']['sites'].find_one({'_id': '<hostname>'}, {'env_vars.DRUPAL_DB_NAME': 1})
+   db_name = site['env_vars']['DRUPAL_DB_NAME']
+   ```
+   If `DRUPAL_DB_NAME` is missing or starts with `VAULT:` (encrypted), fall back to `SHOW DATABASES LIKE '<site-slug>%'` on the RDS instance and pick the `_drupal` database. If the result is ambiguous, post a Jira comment and **STOP**.
+
+   **Open an SSH tunnel** — see `prompts/TOOLS.md §RDS` for the full command. Kill any stale tunnel first (`pkill -f "ssh -f -N -L.*$RDS_STAGING_LOCAL_PORT"`), then:
+   ```bash
+   ssh -f -N -L "$RDS_STAGING_LOCAL_PORT:$RDS_STAGING_ENDPOINT:3306" "$RDS_JUMP_HOST_MAIN" -o StrictHostKeyChecking=accept-new
+   ```
+   Adjust the env-var prefix for DEV or CIVIPLUS environments. `StrictHostKeyChecking=accept-new` is required — without it the agent blocks on a host-key prompt.
+
+   **Query with MySQL — SELECT only.** The credentials are read-only; do not attempt `UPDATE`/`INSERT`/`DELETE`/`ALTER`. Redact PII (names, emails, contact details) when quoting results into Jira comments or PR bodies — same rule as invariant 10.
+
+   **Branch on findings:**
+   - **Entity data correct** (images set, published, dates eligible, expected rows present) → code bug confirmed; continue to step 5.
+   - **Entity misconfigured** (NULL image FID, unpublished, date constraint not met, record absent) → post a Jira comment quoting structural evidence (IDs, NULL columns, counts — not raw user data), and proceed to step 15 with prefix `blocked-data`.
+
 5. **Clone the target repo(s).**
 
    - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Do **not** create `./repo-core/`. Subsequent steps that reference `./repo-core/` apply only to dual-target runs (each such step is explicitly scoped). The run is single-target whenever `./repo-core/` is absent from the workspace.
@@ -539,7 +568,7 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
     If `after.png` was captured (§8 CSS-only or 12b-bis Phase B), PR `## After` references the dev-site URL or notes the workspace capture.
 
-    **Reproduction gate.** If exit non-zero OR `before.png` missing AND the two-condition gate at the top of step 10 was met (staging URL resolvable + host passes `assert_staging_host`): **STOP.** Do NOT proceed to step 11 or 12. Before stopping, try the small-element fallback: if the bug description references an icon, badge, narrow button, or any element below ~40px, re-run with `device_scale_factor=3` as described in `prompts/visual-repro.md` §9c. If §9c reproduces the bug, continue normally. If §9c also fails to fire `assert_bug_reproduced`: post a Jira comment via the Atlassian MCP explaining (a) the URL tested, (b) the reproduction steps attempted, (c) that `assert_bug_reproduced` did not fire even at 3× DPI. Proceed to step 15 with prefix `blocked-verify`. _If `before.png` was captured before the gate failed, embed it inline using the screenshot embedding workflow above._
+    **Reproduction gate.** If exit non-zero OR `before.png` missing AND the two-condition gate at the top of step 10 was met (staging URL resolvable + host passes `assert_staging_host`): **STOP.** Do NOT proceed to step 11 or 12. Before stopping, try the small-element fallback: if the bug description references an icon, badge, narrow button, or any element below ~40px, re-run with `device_scale_factor=3` as described in `prompts/visual-repro.md` §9c. If §9c reproduces the bug, continue normally. If §9c also fails to fire `assert_bug_reproduced`: before declaring the bug unreproducible, ensure step 4a's data-state verification was completed — the entity may be correctly configured and the bug is in rendering logic, not in missing data. If 4a was completed and confirmed entity data is correct, post a Jira comment via the Atlassian MCP explaining (a) the URL tested, (b) the reproduction steps attempted, (c) that `assert_bug_reproduced` did not fire even at 3× DPI. Proceed to step 15 with prefix `blocked-verify`. _If `before.png` was captured before the gate failed, embed it inline using the screenshot embedding workflow above._
 
     If the gate at the top of step 10 was NOT met (no staging URL resolvable, or host did not pass `assert_staging_host`): document in PR `## Comments` ("Visual repro skipped: <reason>") and proceed with `## Manual verification required` in the PR body.
 
@@ -923,6 +952,7 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
    - **Blocked at classification (step 3.2 Uncertain) or environmental blocker (see "Blockers" section below):** `blocked <ISO-8601-timestamp> {{ issue.identifier }}`
    - **Reviewer rejected at N=3 (step 12b):** `blocked-review <ISO-8601-timestamp> {{ issue.identifier }}`
    - **Reproduction or verification failed (step 10d, Phase A A5, Phase B `assert_bug_fixed` after recovery, or Core PR gate):** `blocked-verify <ISO-8601-timestamp> {{ issue.identifier }}`
+   - **Entity data-state confirmed as root cause (step 4a: no code bug):** `blocked-data <ISO-8601-timestamp> {{ issue.identifier }}`
 
    Do not transition the Jira status yourself — leave that to the human reviewing the PR.
 
@@ -953,6 +983,7 @@ When blocked, the Jira comment should state: what's missing, why it blocks the w
 | `dry-run` | DRY-RUN OVERRIDE ran through step 12a, reviewer approved, no external side effects. | DRY-RUN OVERRIDE block |
 | `blocked-review` | Reviewer subagent rejected at N=3 (invariant #9 loop limit). | Step 12b |
 | `blocked-verify` | Reviewer approved, dev-site deploy succeeded, but `assert_bug_fixed` did not fire — typically the fresh anondb lacks the data state that triggers the bug. Operator decides whether to seed data + retry, push the PR manually after sanity-checking the dev site, or widen anondb selection. | Step 12b-bis |
+| `blocked-data` | Step 4a confirmed the entity is misconfigured (NULL column, unpublished, date not met) — the bug is a data issue, not a code issue. Jira comment quotes structural evidence. | Step 4a |
 | `blocked` | Generic blocker (Blockers section: repo not on allowlist, missing credentials, infra-touching scope, irreproducible bug, uncertain classification at step 3.2). | Blockers section |
 
 Any other prefix, missing fields, malformed timestamp, or mismatched `issue.identifier` is a workflow bug and must be flagged by `analyze-run.py`. Operators rely on these strings to triage runs at a glance; do not invent new prefixes without updating this schema first.
