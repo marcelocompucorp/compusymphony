@@ -266,7 +266,7 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
 
 - Do steps 1–11 fully (investigate, plan, implement, commit locally). **For dual-target runs: step 11a's `git push <client-remote> qa-<TICKET>` IS a real remote side effect and IS permitted in dry-run** — the `qa-<TICKET>` branch push is a prerequisite for Phase B and is functionally equivalent to the Jenkins triggers (opt-in real side effect for E2E validation). Suppress only `gh pr create` and Jira writes. The operator can manually delete the `qa-<TICKET>` branch after the dry-run if desired.
 - Do step 12a (dispatch the reviewer subagent and save `review-result-r<N>.json`) — we want to validate the reviewer path works.
-- Do step 12b-bis **fully (both Phase A and Phase B)** if the repo is in `SITE_DEPLOYABLE_REPOS` — we want to validate the entire two-phase dev-site path. **Pass `lifespan=1` to Phase A** (`trigger_dev_site`) so dry-run sites evaporate fast and don't accumulate. Phase B (`trigger_release_devsite`) has no lifespan parameter and always runs to completion. This means dry-run produces **two** Jenkins triggers (count=2 in the audit) and both `before.png` and `after.png` should land in `.agent-artifacts/`. The Jenkins triggers are real production side effects, but the user opted into autonomous dev-site provisioning; dry-run E2E validation has no value if we skip the new step.
+- Do step 12b-bis **fully (both Phase A and Phase B)** if the repo is in `SITE_DEPLOYABLE_REPOS` — we want to validate the entire two-phase dev-site path. **Pass `lifespan=1` to Phase A** (`trigger_dev_site`) so dry-run sites evaporate fast and don't accumulate. Phase B (`trigger_release_devsite`) has no lifespan parameter and always runs to completion. This means dry-run produces **two** Jenkins triggers (count=2 in the audit) and both `before.png` and `after.png` should land in `<workspace>/`. The Jenkins triggers are real production side effects, but the user opted into autonomous dev-site provisioning; dry-run E2E validation has no value if we skip the new step.
 - **Do NOT run `gh pr create`** (skip 12c entirely). No PR is to be opened.
 - **Suppress ALL agent-initiated Jira writes in dry-run mode** — no comments, label mutations, status transitions, worklogs, or issue links of any kind, with ONE exception (the success-path label removal below). This is a categorical rule, not an enumeration: any new agent-initiated Jira write added to the Routine in future MUST also be suppressed under dry-run. The currently-known write paths covered: step 13 PR-link comment, step 1a triage-conflict comment, Blockers-section block comment, invariant 1's allowlist-miss comment, step 3b's multi-site / zero-site / ambiguous-images.php / failed-rev-parse comments, step 4a data-state block comments (production host, missing/ambiguous DB, entity misconfigured), any TOOLS.md gated-request comment (e.g. Loki production approval, AWS role-ARN request), attachment uploads (the prerequisite upload step for screenshot-embedding comments is also a Jira write and must be suppressed in dry-run mode — skip both the upload and the wiki-markup comment, falling back to a plain text-only MCP comment if a Jira write is permitted, or omitting the comment entirely if not), and any future comment-on-exit path. The operator triggered the dry-run, has the workspace + `<workspace>/dry-run-summary.md` + `<workspace>/AGENT_DONE` as the complete audit trail, and can inspect everything directly. Jira viewers (other engineers, clients) MUST NOT see test-run artifacts.
 - **Label handling depends on outcome:**
@@ -562,18 +562,8 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
     10b. Pick the simplest pattern (1/2/3) that fits the bug; copy the skeleton to `<workspace>/repro.py` (workspace root — NOT inside `./repo-client/` or `./repo-core/`).
     10c. Fill `reproduce(page)` and `assert_bug_reproduced(page)`. First line of `main()` must be `pathlib.Path("before.png").unlink(missing_ok=True)`. If the substantive diff is CSS-only per `prompts/visual-repro.md` §8's gate, ALSO add the after-state pass — see §8 for the code fixture, the inject-after-reproduce ordering, and the `assert_bug_fixed` contract.
     10d. Run: `cd <workspace> && python3 repro.py`. Outputs `<workspace>/before.png` on success (and `<workspace>/after.png` when §8 applies). (The `cd` is required because `page.screenshot(path="...")` is cwd-relative.)
-    10e. **Gitignore policy (v1.12+, mandatory):** Before committing any artifacts, ensure `.agent-artifacts/` is present in the **client repo's** `.gitignore`. Check and add if missing:
 
-    ```bash
-    cd <workspace>/repo-client
-    if ! grep -qF '.agent-artifacts/' .gitignore 2>/dev/null; then
-      echo '.agent-artifacts/' >> .gitignore
-      git add .gitignore
-      git commit -m "{{ issue.identifier }}: gitignore agent scaffolding"
-    fi
-    ```
-
-    With `.agent-artifacts/` gitignored, screenshots are **workspace-only** — they cannot be committed. This is correct by design. The `git add .agent-artifacts/` step from earlier policy versions (v1.5–v1.11) is **removed**. Screenshots captured to `<workspace>/before.png` and `<workspace>/after.png` stay in the workspace for operator audit and persist in the JSONL transcript; they do NOT enter the client repo's git history.
+    Screenshots are **workspace-only** — `<workspace>/before.png` and `<workspace>/after.png`. They stay in the workspace for operator audit and persist in the JSONL transcript; they do NOT enter the client repo. Do NOT add `.agent-artifacts/` to the client repo's `.gitignore`; this is agent scaffolding and has no place in client history.
 
     If exit 0 AND `before.png` exists: screenshots are available at `<workspace>/before.png`. They will be referenced in the PR body using the dev-site URL (if 12b-bis ran) or the manual-verification block (if 12b-bis was skipped).
 
@@ -775,7 +765,7 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
    **A5. Capture before.png:**
 
-   Run `visual-repro.md §9a`: reproduce the bug → `assert_bug_reproduced` → capture `before.png`. Save to `<workspace>/before.png` and copy to `repo/.agent-artifacts/{{ issue.identifier }}/before.png`. Commit on the agent branch (second commit after the fix commit — intentional append post-approval).
+   Run `visual-repro.md §9a`: reproduce the bug → `assert_bug_reproduced` → capture `before.png`. Save to `<workspace>/before.png`.
 
    **Reproduction gate.** If `assert_bug_reproduced` does **not** fire: **STOP.** Do NOT fall back to staging `before.png`. Do NOT continue to Phase B. Post a Jira comment via the Atlassian MCP explaining (a) the dev site URL tested, (b) the `reproduce()` steps attempted, (c) that `assert_bug_reproduced` did not fire on the dev site after the broken tag was deployed. Proceed to step 15 with prefix `blocked-verify`. _If `before.png` was captured, embed it inline using the screenshot embedding workflow above._ A fix that cannot be confirmed as reproduced on real infrastructure must not be shipped.
 
