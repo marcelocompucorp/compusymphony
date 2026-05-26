@@ -209,6 +209,29 @@ These override defaults; treat them as hard rules.
 
 11. **No ticket narrative in source.** In-source free-form comments (block or line) explain non-obvious behaviour the next reader of the code needs — a Drupal 7 quirk, a hook-ordering constraint, why a guard exists. They do NOT recount ticket history, cascade rationale, reviewer feedback, or the agent's reasoning process — that belongs in the commit message and PR description. If a comment starts with the ticket ID, paraphrases the PR `## Cause` section, or restates "what the user reported" — delete it. This rule does NOT apply to docblocks (PHPDoc `@param`/`@return`, JSDoc, etc.) — those remain required where the linter or convention demands them. (Recurring reviewer feedback from human engineers — most recently Ayush on `compucorp/ies#232`.)
 
+12. **Three-dot vs two-dot diff.** Whenever you diff your branch against the default branch — for the reviewer payload, the PR body, the doc-only skip guard, the visual-repro gates, the dry-run summary, anywhere — use **three dots** (`git diff <default-branch>...HEAD`), not two dots (`<default-branch>..HEAD`). The Routine deliberately forks `BASE_COMMIT` from the deployed tag (step 3b), which may be behind the default branch. Two-dot diff against the default branch then surfaces commits other people landed on the default branch since `BASE_COMMIT` as if they were yours — leading to PR-body narratives describing fixes you did not make. Three-dot diffs against the merge-base, which is what you actually authored. Exception: `HEAD~1..HEAD` (single-step diff) and any explicit commit-range diff that does not involve the default branch are unaffected.
+   - Canonical failure: `compucorp/ies#240` — the resume session ran `git diff master..HEAD` and mistook unrelated master-side commits for its own work, then wrote a phantom `_1_elements.scss` fix into the PR body.
+
+13. **Falsifiable assertions in repro + verification scripts.** Every assertion in `repro.py` (Phase A `before.png` script) and `capture_after_png.py` (Phase B `after.png` script) MUST be falsifiable: it must be capable of failing if the bug is unfixed. This means:
+   - **No silent skips.** A pattern like `if "bugN" in state: assert ...` is forbidden: if the prerequisite markup is missing from the page, the script must `raise AssertionError(f"could not observe bug N — prerequisite markup '<selector>' not on page; verification incomplete")`. Missing observation = hard fail, never a silent pass.
+   - **Assertions test for the expected value, not for "any change from broken."** `assert state["bug1"]["borderRadius"] != "0px"` is broken: it green-lights `50%` (a circle) when the spec calls for `8px` (rounded square). Assert against the actual design/spec value (`== "8px"`), pulled from the ticket, the design ref, or the plan's investigation summary — not against a sentinel of "non-zero" / "non-empty" / "not-the-broken-value."
+   - **Prerequisite users must be provisioned, not skipped around.** If the ticket's repro requires a user with specific attributes (contact image, role, permission, etc.), and the available creds do not satisfy it, you MUST create/configure such a user before claiming repro. `create_test_user` in `repro_helpers.py` is the entry point; extend it as needed. Falling back to "admin doesn't have a contact image so we'll just skip Pass 3" is a workflow violation that masquerades as success.
+   - Canonical failure: `compucorp/ies#240` shipped a no-op fix for bug #1 because the assertion was guarded by `if "bug1" in state` and admin had no contact image, so the markup was never observed — silent pass.
+
+14. **Plan evidence for runtime claims.** Any claim in `plan.md` about *runtime* behaviour — DOM state, computed style, network response shape, JS execution order, runtime class lists, what a filter strips, what Drupal `hook_FOO_alter` does — MUST be accompanied by inline evidence: a quoted DOM/JSON snippet, a path to the recon artifact that captured it, or a literal output of the command that observed it. Claims about *source* (what a PHP/JS file *emits*) are evidenced by reading the file; claims about *runtime* (what the browser/server actually does at request time) need observation.
+   - If you cannot evidence a runtime claim before the implementation phase, mark it inline as `ASSUMPTION TO VERIFY: <claim>` and create a **linked verification task** in the plan's task list that runs before the implementation task depending on it. The verification task must produce a falsifiable artifact (a recon screenshot, a DOM dump, a console log) that confirms or refutes the assumption. Implementation tasks may not start until their blocking verification tasks have produced concrete evidence.
+   - Canonical failure: `compucorp/ies#240`'s plan stated as fact "the runtime class list collapses to `user-login-image -black`" — speculation never observed (admin had no contact image so the recon returned only the logo). That single unverified assumption was the load-bearing premise of the bug-1 fix.
+
+15. **PR body files = commit files.** The PR body's enumerated file references in `## Technical Details` MUST match the actual file list in your commit(s). Cross-check before `gh pr create` and before any `gh pr edit` that touches the body:
+   ```
+   git diff --name-only <default-branch>...HEAD   # three dots, see invariant 12
+   ```
+   Any file mentioned in `## Technical Details` must appear in that list; any file in that list (excluding `.gitignore`-only or trivial additions) should appear in the body's narrative. `analyze-run.py:detect_pr_body_drift` flags mismatches.
+   - Canonical failure: `compucorp/ies#240`'s body described a fix in `_1_elements.scss` that wasn't in the commit (consequence of invariant 12 violation).
+
+16. **Resume sessions re-invoke `verification-before-completion`.** If your run was resumed (e.g. after 5-hour compaction, see existence of a prior session jsonl for the same workspace), the resumed session MUST re-invoke the `superpowers:verification-before-completion` skill before any `gh pr create`, `gh pr edit`, or `AGENT_DONE` write. Skill state is not preserved across resumption; the AGENT_DONE schema check alone is too late (it runs after the writes). `analyze-run.py:detect_resume_skill_loss` flags resumed runs that issued `gh pr create|edit` without re-invoking the skill.
+   - Canonical failure: `compucorp/ies#240`'s resume session edited the PR body to add the fabricated `_1_elements.scss` paragraph without any pre-write verification.
+
 ## Required skills (invoke via the `Skill` tool, in order)
 
 The integration depends on these — do not skip:
@@ -250,7 +273,7 @@ When active, this is a **dry-run** for end-to-end validation. Execute the Routin
   - **Dry-run SUCCESS** (reviewer approved at any round): remove BOTH `agent:todo` AND `agent:dry-run` labels via the Atlassian MCP. **This is the only Jira mutation permitted in dry-run mode**, and exists to prevent the post-completion retry storm.
   - **Dry-run BLOCKED** (reviewer rejected at N=3, or any other blocker per step 12b / the Blockers section): leave BOTH labels ON for human triage. The block reason goes into `<workspace>/dry-run-summary.md` ONLY — NOT into a Jira comment. If the operator wants to share the block reason on Jira, they post it manually after reviewing the workspace.
 - Leave the local branch + commits in the workspace `./repo-client/` (and `./repo-core/` if dual-target) for human inspection.
-- At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>..HEAD`), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
+- At the end, write `<workspace>/dry-run-summary.md` containing: (a) target repo + branch, (b) files changed (output of `git diff --stat <default-branch>...HEAD` — note three dots, see "Three-dot vs two-dot diff" under Invariants), (c) reviewer verdict and rounds attempted, (d) what step 12c onwards *would* have done, (e) any caveats or unverified claims.
   - (f) Visual-repro outcome — one of:
     - `committed-repro` (script ran, assertion fired, before.png at <workspace>/before.png)
     - `gate-skipped` (gate condition failed; reason)
@@ -652,8 +675,8 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
    Pass it: ticket identifier+title+description+filtered comments, contents of `<workspace>/plan.md`, workspace path. If this is round N>1, also pass `prior_findings` (the `findings` array from `<workspace>/review-result-r<N-1>.json`). Save its output to `<workspace>/review-result-r<N>.json`.
 
    **Diff to pass:**
-   - **Single-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-client/`
-   - **Dual-target:** `git diff <default-branch>..HEAD` from inside `<workspace>/repo-core/` (the core PR's diff). The client QA branch diff is byte-identical (or close after 3-way) — do NOT send it separately; reviewer section 7 (dual-target completeness) verifies only that the QA branch push happened.
+   - **Single-target:** `git diff <default-branch>...HEAD` from inside `<workspace>/repo-client/` (three dots; see "Three-dot vs two-dot diff" under Invariants).
+   - **Dual-target:** `git diff <default-branch>...HEAD` from inside `<workspace>/repo-core/` (the core PR's diff). The client QA branch diff is byte-identical (or close after 3-way) — do NOT send it separately; reviewer section 7 (dual-target completeness) verifies only that the QA branch push happened.
 
    **Additional v1.12 inputs to pass:**
    - `workspace_layout`: `"single"` or `"dual"`
@@ -669,7 +692,7 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
    **Dual-target note:** For core-rooted runs, both phases use `./repo-client/` as the deploy target — because the bug exhibits on the client site, not on the core extension in isolation. The `qa-<TICKET>` branch in `./repo-client/` must be pushed (step 11a) before Phase B triggers. If `PROPAGATION_STATUS == skipped`, Phase B is also skipped (no QA branch to deploy); `AGENT_DONE` becomes `success-core-only` after the core PR opens.
 
-   **Skip guard — doc-only diffs:** Run `git diff --stat <default-branch>..HEAD` and if every changed path matches `*.md`, `*.txt`, or is comment-only, skip 12b-bis with `## Comments` note: "Dev-site step skipped: doc-only diff." Saves Jenkins on trivial PRs.
+   **Skip guard — doc-only diffs:** Run `git diff --stat <default-branch>...HEAD` (three dots) and if every changed path matches `*.md`, `*.txt`, or is comment-only, skip 12b-bis with `## Comments` note: "Dev-site step skipped: doc-only diff." Saves Jenkins on trivial PRs.
 
    Symphony's stall detector fires after ~5 min of no Claude API activity. Jenkins builds can run for up to 30 min. **Never run a poll loop in a single blocking Bash call.** The pattern below uses 90-second timeout chunks — each iteration is a fresh Bash call that resets the stall timer. Cap all poll loops at 20 re-runs (~30 min); treat cap as a failure per the failure table below.
 
@@ -938,7 +961,7 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
    **On the success path:** remove the `agent:todo` label via the Atlassian MCP (`editJiraIssue` with `update.labels.remove`). Do NOT apply `agent:blocked`. The label removal signals Symphony you're done — otherwise Symphony will keep re-dispatching this ticket on every poll.
 
-   **On the block path** (any `blocked*` prefix in step 15): **leave** `agent:todo` on AND **apply** the `agent:blocked` label via the Atlassian MCP (`editJiraIssue` with `update.labels.add`). The `agent:blocked` label is purely informational — it makes blocked tickets filterable from any Jira board. Symphony's own poll / dispatch / preflight logic does NOT read this label; removing it has no effect on Symphony's behavior. Retry is operator-driven via workspace rename + `agent:todo` re-apply. Single-click retry-from-Jira is tracked as BACKLOG item 21 (`agent:retry` label, deferred to v1.14).
+   **On the block path** (any `blocked*` prefix in step 15): **remove** `agent:todo` AND **apply** `agent:blocked` via the Atlassian MCP (two separate `editJiraIssue` calls: one `update.labels.remove` for `agent:todo`, one `update.labels.add` for `agent:blocked`). Removing `agent:todo` is essential — Symphony writes `AGENT_DONE` at step 15, so if `agent:todo` were left on, the next poll would hit `workspace_already_done` and enter an infinite exponential-backoff retry loop. The `agent:blocked` label is purely informational — it makes blocked tickets filterable from any Jira board. Symphony's own poll / dispatch / preflight logic does NOT read this label; removing it has no effect on Symphony's behavior. To retry: rename the workspace (so `AGENT_DONE` is gone) **and** re-apply `agent:todo`. Single-click retry-from-Jira is tracked as BACKLOG item 21 (`agent:retry` label, deferred to v1.14).
 
    **Label auto-creation note:** Atlassian Cloud auto-creates labels on first use, so no Jira admin action is required to provision `agent:blocked` before this lands.
 

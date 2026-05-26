@@ -29,11 +29,13 @@ inputs explicitly listed below.
      Older / unrelated comments may be summarised or omitted.
 2. **Plan** — contents of `<workspace>/plan.md` (the bite-sized plan written
    by the `superpowers:writing-plans` skill before implementation).
-3. **Diff** — full output of `git diff <default-branch>..HEAD` from inside
+3. **Diff** — full output of `git diff <default-branch>...HEAD` (three dots,
+   merge-base; see WORKFLOW invariant 12) from inside
    `<workspace>/repo-client` (single-target) or `<workspace>/repo-core`
    (dual-target core PR). Read the file headers carefully: changes to
    `.tpl`, `.module`, `info.xml`, `*.install` files have different review
-   semantics than pure PHP changes.
+   semantics than pure PHP changes. If the parent passed a two-dot diff,
+   flag it as a `WARNING` and re-derive with three dots before evaluating.
 4. **Workspace path** — so you can use `Read`/`Grep`/`Glob` to inspect files
    in their full context (not just the diff hunks). The diff alone is
    often insufficient to judge intent.
@@ -74,7 +76,7 @@ file in the diff (excluding `.agent-artifacts/`), verify it is referenced
 by name in `plan.md`:
 
 ```bash
-for f in $(git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+for f in $(git diff --name-only --diff-filter=ACM <default-branch>...HEAD \
               | grep -v '^.agent-artifacts/'); do
   if ! grep -q "$(basename "$f")" "$WORKSPACE/plan.md"; then
     echo "PLAN_DEVIATION: $f"
@@ -91,6 +93,16 @@ update `plan.md` to reflect the actual files touched (preferred) or
 (b) document each deviation in PR `## Comments` with a one-line reason.
 Do NOT escalate to BLOCKER on plan deviation alone — the substance
 trace is what gates the diff.
+
+**Plan runtime-evidence sub-check (WORKFLOW invariant 14).** Scan `plan.md` for claims about **runtime behaviour** — what the browser/DOM/server actually does at request time, as distinct from what the source code emits. Typical phrasing: "the runtime class list", "at runtime X collapses to Y", "the rendered output", "the live response", "the deployed CSS", "the post-AJAX state", "the filter strips", "after the hook runs", etc.
+
+For each such claim, verify that it is accompanied by inline evidence: a quoted DOM/JSON/response snippet, a path to a recon artifact in the workspace (e.g. `recon-loggedin-desktop.png`, `recon-header.html`), or a literal command output. Claims about *what a source file emits* are evidenced by reading the file and are NOT in scope — only *runtime* claims need this gate.
+
+- **BLOCKER** if a runtime claim is the load-bearing premise of the fix (the diff depends on it) AND it has no inline evidence AND no `ASSUMPTION TO VERIFY:` marker linking to a completed verification task. State which claim, which diff hunk depends on it, and what falsifiable observation would settle it.
+- **QUESTION** if a runtime claim has no evidence but the diff does not depend on it (e.g. background investigation note). Ask the agent to either evidence it or remove it.
+- **Pass** if all runtime claims either have inline evidence (quoted DOM/recon path/command output) OR are marked `ASSUMPTION TO VERIFY:` with a corresponding verification task that produced an artifact before the dependent implementation task ran.
+
+The canonical failure was `compucorp/ies#240`: `plan.md` stated as fact "the runtime class list collapses to `user-login-image -black`" — speculation, never observed (the recon was as admin, who has no contact image, so `HEADER_IMGS` returned only the logo). That single unverified claim was the entire premise of the bug-1 fix, and the shipped CSS rule was a no-op at runtime against Bootstrap's `!important` utilities.
 
 ### 2. Triage-conflict check
 
@@ -230,6 +242,23 @@ If the parent supplies the prospective PR description, verify it follows
 - `## Before`/`## After` mention screenshots OR explicitly say
   "_Screenshots to be added before merge._" for UI changes
 
+### 6a. PR-body / commit drift (WORKFLOW invariant 15)
+
+Cross-check the file references in the PR body against the actual commit's file list. Both sides should match:
+
+```bash
+# Actual files in the diff (three dots — see invariant 12):
+git diff --name-only <default-branch>...HEAD
+```
+
+Then walk the PR body, especially `## Technical Details`, and extract every file path mentioned (e.g. `sites/all/themes/.../_4_sections.scss`, `_1_elements.scss`). For each:
+
+- **BLOCKER** if the body describes a change in a file that is NOT in the actual diff (phantom-fix drift — the body invents work that wasn't committed). State the path and the body excerpt.
+- **WARNING** if the actual diff includes a non-trivial file (>5 LoC, non-`.gitignore`) that the body's `## Technical Details` does not mention. Either the body undersells the change or the file shouldn't be in the diff.
+- **Pass** when both sides match.
+
+The canonical failure was `compucorp/ies#240`: the PR body's `## Technical Details` described a `_1_elements.scss` change ("drops the `:not(.form-radios):not(.form-checkboxes)` exclusions") that wasn't in the committed diff. Root cause: a two-dot `git diff master..HEAD` against the wrong base surfaced unrelated master-side commits as if they were the agent's work, and the body was written from that misread.
+
 ## Severity rubric (Compucorp `ai-code-review.md`)
 
 | Severity | When to use | Loop behaviour |
@@ -267,6 +296,34 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
 
 1. **First function call** in `repro.py` (after imports + module-level constant assignments like `SITE = "..."`) is `assert_staging_host(SITE)`. **BLOCKER** if absent.
 2. **`assert_bug_reproduced(page)`** is defined as a function AND is called immediately before any `page.screenshot(path="before.png", ...)` call. **BLOCKER** if missing, undefined, or called after the screenshot.
+
+2a. **Falsifiable assertions — no silent skips, no wrong thresholds (WORKFLOW invariant 13).** Every assertion inside `assert_bug_reproduced`, `assert_bug_fixed`, or any `assert_*` helper in `repro.py` / `capture_after_png.py` must be capable of failing if the bug is unfixed. Three sub-checks, each a **BLOCKER**:
+
+   - **Conditional-skip guards.** Scan for the pattern `if "bugN" in state:` or `if state.get("bugN"):` (or equivalent — `if X is not None:`, `if X:` followed by `assert`) wrapping an assertion. If the guard's purpose is "skip the assertion when the prerequisite markup wasn't observed," **BLOCKER** — the script must raise `AssertionError("could not observe bug N — prerequisite markup '<selector>' not on page; verification incomplete")` instead. Missing observation = hard fail, never a silent pass.
+
+     Quick grep, scoped to the verification scripts:
+     ```bash
+     grep -nE 'if .*("bug[0-9]|state\[.bug[0-9]|\.get..bug).*:.*$' \
+       "$WORKSPACE/repro.py" "$WORKSPACE/capture_after_png.py" 2>/dev/null
+     ```
+     Any hit needs visual inspection: is the guard skipping an assertion, or guarding setup code (acceptable)? Flag the former.
+
+   - **Sentinel-value thresholds.** Flag assertions that test for "any change from broken" rather than the actual design/spec value. Examples that are **BLOCKERs**:
+     ```python
+     assert state["bug1"]["borderRadius"] != "0px"   # green-lights 50% (circle) when spec is 8px (rounded square)
+     assert state["bug3"]["bg"] != "rgb(161, 189, 71)"  # green-lights any other colour, including a different wrong one
+     ```
+     The fix is to test against the **expected** value pulled from the ticket / design ref / plan investigation:
+     ```python
+     assert state["bug1"]["borderRadius"] == "8px"
+     assert state["bug3"]["bg"] in ("rgba(0, 0, 0, 0)", "transparent")
+     ```
+     If the expected value is genuinely unknown to the script author, the plan must record it (in the investigation summary or as an `ASSUMPTION TO VERIFY:` marker per invariant 14), and the verification task that resolves it must run before this assertion's commit.
+
+   - **Prerequisite-user provisioning.** If the ticket's reproduction steps name a user with specific attributes (a logged-in user with a contact image, a user in a given role, etc.) and the verification script logs in as a user that does NOT satisfy those attributes (typical case: logged in as admin, but admin has no contact image so the markup never appears), the script must either provision a matching user via `create_test_user` (extending it as needed for the attribute in question) or hard-fail with a clear error. Falling through to a `if "bug" in state:` no-op is the silent-skip pattern above and a **BLOCKER**.
+
+   The canonical failure was `compucorp/ies#240`: `capture_after_png.py` Pass 3 was guarded by `if "bug1" in state:`, the admin user had no contact image, the markup was never observed, the assertion silently passed, and the shipped CSS rule was a no-op at runtime. Even if Pass 3 had observed the markup, the assertion `borderRadius != "0px"` would have green-lit `50%` (Bootstrap's `.rounded-circle !important` won).
+
 3. **Test-user cleanup** is unconditionally guaranteed for any user created in `repro.py`:
    - **PREFERRED:** use `with lifecycle_test_user(admin_page, ...)` — the context manager guarantees `cancel_test_user_by_uid` runs on `__exit__` (including on raised exceptions).
    - **Acceptable but riskier:** a hand-rolled `try: ... finally:` block where the `finally:` clause **must** call `cancel_test_user_by_uid(admin_page, uid)` (or `find_uid_by_username` + `cancel_test_user_by_uid` as a recovery). A `finally:` block that closes the browser but does NOT cancel the test user is **NOT** sufficient.
@@ -290,7 +347,7 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
 
 5. **After-state capture for CSS-only diffs** (`visual-repro.md` §8). Determine whether the diff is CSS-only by running, from inside `<workspace>/repo` (keep this command in sync with the gate in `visual-repro.md` §8):
    ```bash
-   git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+   git diff --name-only --diff-filter=ACM <default-branch>...HEAD \
      | grep -v '^.agent-artifacts/' \
      | grep -vE '\.(scss|css|tpl|map)$' \
      | head -1
@@ -362,14 +419,14 @@ GULP_THEMES=$(git ls-files --full-name -- '*/themes/*/gulpfile.js' '*/themes/*/g
                | xargs -I{} dirname {})
 THEME_DIRS=$(printf '%s\n%s\n' "$PKG_THEMES" "$GULP_THEMES" | sort -u | grep -v '^$')
 
-SCSS_CHANGED=$(git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+SCSS_CHANGED=$(git diff --name-only --diff-filter=ACM <default-branch>...HEAD \
                  | grep -E '\.(scss|sass)$' || true)
 
 # Iterate via while-read for zsh/bash portability (`for d in $VAR` mis-splits under zsh).
 echo "$THEME_DIRS" | while IFS= read -r d; do
   [ -z "$d" ] && continue
   if echo "$SCSS_CHANGED" | grep -q "^$d/"; then
-    DIST_CHANGED=$(git diff --name-only --diff-filter=ACM <default-branch>..HEAD \
+    DIST_CHANGED=$(git diff --name-only --diff-filter=ACM <default-branch>...HEAD \
                     | grep -E "^$d/(dist|build|css|public/css)/.*\.css$" || true)
     if [ -z "$DIST_CHANGED" ]; then
       echo "BUILD_ARTIFACT_MISSING: $d edited SCSS but no compiled .css change"

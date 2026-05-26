@@ -25,6 +25,16 @@ Reads a Claude Code session JSONL and prints a structured audit covering:
     - Files Read/Written/Edited
     - WebFetch URLs, Bash commands, MCP Atlassian calls
     - dev-ai-playbooks consulted
+
+  Tier 2 (WORKFLOW invariants 13/15/16 — added after IESBUILD-248 post-mortem):
+    - detect_pr_body_drift: cross-checks PR body file mentions vs the actual
+      three-dot diff (invariant 15 — phantom-fix narratives).
+    - detect_resume_skill_loss: flags resumed sessions that issued
+      `gh pr create|edit` without re-invoking verification-before-completion
+      (invariant 16).
+    - detect_silent_skip_assertions: greps `repro.py` / `capture_after_png.py`
+      for `if "bugN" in state:` guards and `!= "<sentinel>"` assertions
+      (invariant 13).
 """
 
 import json
@@ -348,7 +358,7 @@ def assistant_content_blocks(entry):
     return content if isinstance(content, list) else []
 
 
-def analyze(path):
+def analyze(path, workspace=None):
     entries = list(parse_jsonl(path))
 
     types = Counter()
@@ -722,6 +732,19 @@ def analyze(path):
                 print("  ⚠️  Triggered a dev site but PR body has no `*.cc-test.site` reference.")
                 print("     WORKFLOW.md step 12b-bis requires the URL be embedded for human reviewers.")
 
+    # Tier 2: WORKFLOW invariants 13, 15, 16 — detectors added after IESBUILD-248
+    # post-mortem. Each detector is independently invocable and may run with or
+    # without workspace context; when workspace is None, it falls back to a
+    # transcript-only best-effort check.
+    section("PR body / commit drift (Tier 2 — invariant 15)")
+    detect_pr_body_drift(workspace, gh_pr_create_invocations, entries)
+
+    section("Resume-session skill loss (Tier 2 — invariant 16)")
+    detect_resume_skill_loss(path, skill_names, bash_commands)
+
+    section("Silent-skip assertions in verification scripts (Tier 2 — invariant 13)")
+    detect_silent_skip_assertions(workspace)
+
     # Tier 3: tokens by tool (proxy for cost attribution).
     section("Token usage by tool (Tier 3, approximation)")
     tool_tokens = aggregate_tokens_by_tool(entries)
@@ -763,6 +786,313 @@ def analyze(path):
         print(f"  [{i}] {t}")
 
     print("\n" + "=" * 67)
+
+
+def detect_pr_body_drift(workspace, gh_pr_create_invocations, entries):
+    """WORKFLOW invariant 15: files mentioned in PR body must match the actual
+    commit's file list. Catches phantom-fix narratives like `compucorp/ies#240`
+    (PR body described a `_1_elements.scss` change that wasn't in the commit).
+
+    Sources of truth (in priority order):
+      1. `<workspace>/.pr-body.md` — the canonical PR body Symphony writes
+         before `gh pr create --body-file`.
+      2. The `--body` excerpt captured from `gh pr create` bash invocations.
+      3. The most recent assistant `Write` to a path ending in `.pr-body.md`
+         (fallback if workspace not given).
+
+    Diff source: `git diff --name-only <default-branch>...HEAD` from inside
+    `<workspace>/repo-client` (and `repo-core` if dual-target). When workspace
+    is unavailable, the detector reports best-effort or skips with rationale.
+    """
+    if not workspace:
+        print("  · workspace path not supplied — skipping diff cross-check.")
+        return
+
+    pr_body_path = os.path.join(workspace, ".pr-body.md")
+    pr_body_text = None
+    if os.path.exists(pr_body_path):
+        try:
+            with open(pr_body_path, "r", encoding="utf-8", errors="replace") as f:
+                pr_body_text = f.read()
+        except OSError as exc:
+            print(f"  · could not read {pr_body_path}: {exc}")
+    if pr_body_text is None and gh_pr_create_invocations:
+        # Use the most recent gh pr create body excerpt (truncated, but usually
+        # contains enough file paths to test against).
+        pr_body_text = "\n".join(b for _i, b in gh_pr_create_invocations)
+    if not pr_body_text:
+        print("  · no PR body found (no .pr-body.md and no gh pr create body) — skip.")
+        return
+
+    # Scope the file-mention scan to the `## Technical Details` section
+    # (Compucorp PR template). Phantom-fix claims live there; bullets in
+    # `## Comments` typically reference contextual files (sources Symphony
+    # read but didn't modify) and would produce false positives if scanned.
+    # Split the body on `## <heading>` and locate the Technical Details slab.
+    sections = re.split(r"(?m)^##\s+", pr_body_text)
+    tech_details_text = None
+    for s in sections:
+        if s.lstrip().lower().startswith("technical details"):
+            tech_details_text = s
+            break
+    if tech_details_text is None:
+        print("  · no `## Technical Details` section in PR body — skip (cannot scope safely).")
+        return
+
+    # Collect candidate file paths from the Technical Details section. We look for:
+    #   - backtick-quoted paths: `sites/...`, `profiles/...`, etc.
+    #   - any unquoted token that contains a slash AND ends in a recognised
+    #     source-file extension.
+    body_files = set()
+    # Backtick-fenced paths first (highest precision).
+    for m in re.finditer(r"`([A-Za-z0-9_./\-]+)`", tech_details_text):
+        token = m.group(1)
+        if "/" in token and "." in token and not token.startswith(("http", "www")):
+            body_files.add(token)
+    # Loose extension match for unquoted mentions in prose.
+    for m in re.finditer(
+        r"\b([A-Za-z0-9_./\-]+\.(?:scss|css|php|module|inc|tpl\.php|tpl|js|ts|tsx|info|install|yml|yaml|json|py|sh|md))\b",
+        tech_details_text,
+    ):
+        token = m.group(1)
+        if "/" in token:
+            body_files.add(token)
+
+    # Resolve the diff'd files from the repo subdirs (best-effort; the
+    # workspace conventionally has repo-client/ and optionally repo-core/).
+    diff_files = set()
+    for sub in ("repo-client", "repo-core", "repo"):
+        repo_path = os.path.join(workspace, sub)
+        git_dir = os.path.join(repo_path, ".git")
+        if not os.path.exists(git_dir):
+            continue
+        # Resolve default branch; fall back to whatever symbolic ref `origin/HEAD`
+        # points to, then to common names. Three-dot per WORKFLOW invariant 12.
+        import subprocess  # local import keeps top of file lean
+        try:
+            default = subprocess.run(
+                ["git", "-C", repo_path, "symbolic-ref", "refs/remotes/origin/HEAD"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip().split("/")[-1] or "master"
+        except (subprocess.SubprocessError, OSError):
+            default = "master"
+        try:
+            r = subprocess.run(
+                ["git", "-C", repo_path, "diff", "--name-only",
+                 f"{default}...HEAD"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in r.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    diff_files.add(line)
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"  · could not compute diff in {repo_path}: {exc}")
+
+    if not diff_files:
+        print("  · could not resolve diff file list — skip (no repo-client/repo-core in workspace, or empty diff).")
+        return
+
+    # Drop dotpath prefixes like `.agent-artifacts/` which appear as bare
+    # path tokens in Technical Details (e.g. gitignore-entry mention) but
+    # are directory references, not file paths in the diff sense. Must run
+    # BEFORE the phantom-detection loop below.
+    body_files = {f for f in body_files if not f.endswith("/")}
+
+    # Phantom: mentioned in body, NOT in any actual diff. Match by basename
+    # OR by full path suffix, since the body sometimes uses bare basenames.
+    diff_basenames = {os.path.basename(p) for p in diff_files}
+    phantom = []
+    for f in sorted(body_files):
+        base = os.path.basename(f)
+        in_diff = f in diff_files or any(
+            d.endswith("/" + f) or d == f or d.endswith("/" + base) and base == os.path.basename(d)
+            for d in diff_files
+        ) or base in diff_basenames
+        if not in_diff:
+            phantom.append(f)
+    # Unmentioned: substantive diff file NOT in body. We exclude `.gitignore`,
+    # lockfiles, and trivial config tweaks from the "must be mentioned" set.
+    TRIVIAL_PATHS = {".gitignore", "package-lock.json", "yarn.lock", "composer.lock"}
+    unmentioned = []
+    for d in sorted(diff_files):
+        base = os.path.basename(d)
+        if base in TRIVIAL_PATHS:
+            continue
+        # consider mentioned if the basename or full path appears in body text
+        if base in pr_body_text or d in pr_body_text:
+            continue
+        unmentioned.append(d)
+
+    if not phantom and not unmentioned:
+        print(f"  ✓ PR body files match diff ({len(diff_files)} files in diff, {len(body_files)} referenced in body).")
+        return
+    if phantom:
+        print(f"  ⚠️  Phantom-fix drift: {len(phantom)} file(s) named in PR body but NOT in commit:")
+        for p in phantom[:10]:
+            print(f"     - {p}")
+        print("     Likely cause: two-dot `git diff master..HEAD` against a base behind master (see WORKFLOW invariant 12).")
+        print("     The commit history is the source of truth — edit the body or add the missing change.")
+    if unmentioned:
+        print(f"  ⚠️  {len(unmentioned)} substantive diff file(s) NOT described in PR body's ## Technical Details:")
+        for u in unmentioned[:10]:
+            print(f"     - {u}")
+        print("     Either drop the file from the diff or document the change in the body.")
+
+
+def detect_resume_skill_loss(transcript_path, skill_names, bash_commands):
+    """WORKFLOW invariant 16: a resumed session (e.g. after 5-hour compaction)
+    MUST re-invoke `superpowers:verification-before-completion` before any
+    `gh pr create|edit` or AGENT_DONE write. Skill state is not preserved
+    across resumption; this detector flags resumed sessions that issued PR
+    writes without re-invoking the skill in this session.
+
+    Resumption detection: the agent's session JSONL lives in
+    `~/.claude/projects/<workspace-id>/<session-id>.jsonl`. If the parent
+    directory contains MORE THAN ONE `.jsonl` file, the current session is
+    one of N runs against the same workspace — almost certainly a resumption.
+
+    PR-write detection covers BOTH `gh pr create` AND `gh pr edit` — resume
+    sessions typically edit an existing PR rather than create a new one.
+    """
+    # bash_commands is list of (idx, desc, cmd) tuples per analyze() shape.
+    GH_PR_WRITE = re.compile(r'\bgh\s+pr\s+(?:create|edit)\b')
+    pr_writes = [
+        (idx, cmd) for (idx, _desc, cmd) in bash_commands
+        if GH_PR_WRITE.search(cmd)
+    ]
+    parent_dir = os.path.dirname(transcript_path)
+    try:
+        sibling_paths = sorted(
+            (os.path.join(parent_dir, f) for f in os.listdir(parent_dir)
+             if f.endswith(".jsonl") and os.path.isfile(os.path.join(parent_dir, f))),
+            key=lambda p: os.path.getmtime(p),
+        )
+    except OSError as exc:
+        print(f"  · could not list session dir: {exc}")
+        return
+
+    if len(sibling_paths) <= 1:
+        print(f"  ✓ Single session for this workspace ({len(sibling_paths)} jsonl) — invariant N/A.")
+        return
+
+    # The OLDEST jsonl is the original; any newer one is a resume. If we're
+    # analysing the original (mtime-wise the earliest), the invariant N/A.
+    current_path = os.path.abspath(transcript_path)
+    if current_path == os.path.abspath(sibling_paths[0]):
+        print(f"  ✓ This is the original session ({len(sibling_paths)} sibling jsonls exist but current is oldest) — invariant N/A.")
+        return
+
+    # This IS a resume. Did the agent re-invoke verification-before-completion
+    # in THIS session BEFORE any gh pr create/edit?
+    VBC = "superpowers:verification-before-completion"
+    if VBC in skill_names:
+        print(f"  ✓ Resume detected ({len(sibling_paths)} sibling jsonls); '{VBC}' was re-invoked this session.")
+        return
+    if not pr_writes:
+        print(f"  ✓ Resume detected ({len(sibling_paths)} sibling jsonls); '{VBC}' NOT invoked, but no `gh pr create|edit` either — no PR write to gate.")
+        return
+    print(f"  ❌ Resume detected ({len(sibling_paths)} sibling jsonls); '{VBC}' NOT invoked before `gh pr create|edit`.")
+    print(f"     {len(pr_writes)} PR-write invocation(s) found — first at line {pr_writes[0][0]}.")
+    print("     WORKFLOW invariant 16 requires resumed sessions to re-invoke the skill before PR writes.")
+    print("     The skill is the last gate before phantom-fix drift (invariant 15) ships.")
+
+
+def detect_silent_skip_assertions(workspace):
+    """WORKFLOW invariant 13: scan committed/workspace verification scripts
+    (`repro.py`, `capture_after_png.py`) for two patterns:
+
+      1. Conditional-skip guards around assertions:
+         `if "bugN" in state:` (or `if state.get(...)`) wrapping an `assert`.
+         If the prerequisite markup wasn't observed, the script must hard-fail,
+         not silently no-op.
+
+      2. Sentinel-value thresholds: `assert state[...] != "0px"` (or any
+         `!= "<broken-value>"` form). These green-light the wrong value if it
+         happens to differ from the broken sentinel (e.g. `50%` passes a
+         `!= "0px"` check when the spec is `8px`).
+
+    Canonical failure: `compucorp/ies#240`'s `capture_after_png.py` had both
+    patterns — the conditional guard skipped bug #1 silently, AND the
+    threshold would have green-lit a circle (`50%`) if the markup had been
+    observed.
+    """
+    if not workspace:
+        print("  · workspace path not supplied — skipping script scan.")
+        return
+
+    scripts = []
+    for name in ("repro.py", "capture_after_png.py"):
+        p = os.path.join(workspace, name)
+        if os.path.exists(p):
+            scripts.append(p)
+    if not scripts:
+        print("  · no repro.py / capture_after_png.py in workspace — skip (verification scripts not used).")
+        return
+
+    # Pattern 1: conditional-skip guards.
+    #   if "bug<N>" in state:
+    #   if state["bug<N>"]:
+    #   if state.get("bug<N>"):
+    # We require an `assert` within a small window after the guard to limit
+    # false positives (guards around setup code are fine).
+    cond_pattern = re.compile(
+        r'^\s*if\s+(?:"bug\d+"\s+in\s+state|state\[\s*"bug\d+"\s*\]|state\.get\(\s*"bug\d+"\s*\))[^:]*:',
+        re.MULTILINE,
+    )
+    # Pattern 2: sentinel-not-equal thresholds. Catch the IESBUILD-248 shape
+    # explicitly and the general `!=` against a string literal in an assert.
+    sentinel_pattern = re.compile(
+        r'assert\s+[^\n]+?\!=\s*"[^"]*"',
+    )
+
+    findings = []
+    for script in scripts:
+        try:
+            with open(script, "r", encoding="utf-8", errors="replace") as f:
+                src = f.read()
+        except OSError as exc:
+            print(f"  · could not read {script}: {exc}")
+            continue
+
+        lines = src.splitlines()
+        # Conditional skip: find guard, then look ahead up to 6 lines for an
+        # `assert` indented under it.
+        for m in cond_pattern.finditer(src):
+            guard_line_idx = src[: m.start()].count("\n")
+            guard_indent = len(lines[guard_line_idx]) - len(lines[guard_line_idx].lstrip())
+            for j in range(guard_line_idx + 1, min(guard_line_idx + 7, len(lines))):
+                line = lines[j]
+                stripped = line.lstrip()
+                if not stripped:
+                    continue
+                line_indent = len(line) - len(stripped)
+                if line_indent <= guard_indent:
+                    break  # exited the guard's block
+                if stripped.startswith("assert "):
+                    findings.append((
+                        script, guard_line_idx + 1,
+                        f"conditional-skip guard around assertion: {lines[guard_line_idx].strip()}",
+                    ))
+                    break
+
+        # Sentinel threshold: any `assert ... != "..."` in the script.
+        for m in sentinel_pattern.finditer(src):
+            line_idx = src[: m.start()].count("\n")
+            findings.append((
+                script, line_idx + 1,
+                f"sentinel-not-equal assertion (test for spec value, not 'not broken'): {lines[line_idx].strip()}",
+            ))
+
+    if not findings:
+        print(f"  ✓ No silent-skip or sentinel-not-equal assertions detected in {len(scripts)} script(s).")
+        return
+    print(f"  ❌ {len(findings)} finding(s) across {len(scripts)} script(s):")
+    for path, lineno, msg in findings[:20]:
+        rel = os.path.relpath(path, workspace) if workspace else path
+        print(f"     {rel}:{lineno} — {msg}")
+    print("     WORKFLOW invariant 13: assertions must test the expected value AND hard-fail")
+    print("     when the prerequisite markup is missing. See `compucorp/ies#240` for the canonical miss.")
 
 
 def aggregate_tokens_by_tool(entries):
@@ -856,9 +1186,9 @@ def main(argv):
             file=sys.stderr,
         )
         return 1
-    analyze(argv[1])
-    if len(argv) == 3 and argv[2]:
-        workspace = argv[2]
+    workspace = argv[2] if len(argv) == 3 and argv[2] else None
+    analyze(argv[1], workspace=workspace)
+    if workspace:
         expected_key = os.path.basename(workspace.rstrip("/")) or None
         section("AGENT_DONE schema check")
         findings = validate_agent_done(workspace, expected_issue_key=expected_key)

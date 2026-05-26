@@ -277,7 +277,7 @@ Run after the before.png pass succeeds. The diff is CSS-only when, excluding `.a
 # Keep this command in sync with code-reviewer.md invariant 5.
 cd <workspace>/repo
 DEFAULT=$(gh api repos/<owner>/<repo> --jq .default_branch)
-BEHAVIOR=$(git diff --name-only --diff-filter=ACM "$DEFAULT..HEAD" \
+BEHAVIOR=$(git diff --name-only --diff-filter=ACM "$DEFAULT...HEAD" \
   | grep -v '^.agent-artifacts/' \
   | grep -vE '\.(scss|css|tpl|map)$' \
   | head -1)
@@ -290,7 +290,7 @@ fi
 
 `.map` is allowlisted because `npm run dev` regenerates source maps alongside `dist/css/style.css`. If your build produces other sibling files (e.g., `.css.gz`, `.css.br`) under the same diff, extend the allowlist conservatively. `.tpl.php` is NOT allowlisted — those files mix markup with executable PHP; treat as behavior.
 
-**Empty `dist/css/style.css` diff edge case.** If the only changed file is a `.map` (e.g., source map rebuilt without SCSS source edits), the gate passes but `FIX_CSS` would be empty. Guard with `git diff <default-branch>..HEAD -- 'dist/css/style.css' | grep -q '^+[^+]'` before proceeding; if empty, fall through to manual verification.
+**Empty `dist/css/style.css` diff edge case.** If the only changed file is a `.map` (e.g., source map rebuilt without SCSS source edits), the gate passes but `FIX_CSS` would be empty. Guard with `git diff <default-branch>...HEAD -- 'dist/css/style.css' | grep -q '^+[^+]'` before proceeding; if empty, fall through to manual verification.
 
 ### Code pattern — extend `repro.py`'s `main()` with a second pass
 
@@ -347,7 +347,7 @@ def main():
 **Source `FIX_CSS` from your compiled output.** After running `npm run dev` (or your theme's build command), the relevant added rules sit in `dist/css/style.css`. Extract them with:
 
 ```bash
-git diff <default-branch>..HEAD -- 'dist/css/style.css' \
+git diff <default-branch>...HEAD -- 'dist/css/style.css' \
   | grep '^+[^+]' \
   | sed 's/^+//'
 ```
