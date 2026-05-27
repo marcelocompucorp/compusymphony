@@ -520,6 +520,17 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
    **Build-artifact policy (theme repos).** If you edit `*.scss`/`*.sass` in a theme directory that has a build script (`package.json` with a `"build"` script, or `gulpfile.js`), also regenerate the corresponding compiled CSS (`dist/css/*.css` or equivalent) and commit it in the same fix commit. `compucorp/ase` and `compucorp/ies` both serve the committed compiled CSS directly via theme `.info` declarations and do NOT rebuild in CI — an SCSS-source-only PR deploys with no styling change. If the local build produces output incompatible with the committed format (e.g., minified vs expanded), hand-append the compiled rules in the expected format and document this in PR `## Comments`. See `code-reviewer.md` "Build-artifact policy" section for the reviewer-side invariant.
 
+   **CSS browser-preview before commit (mandatory when a connected browser is available).** When the diff is CSS/SCSS-only (no `*.php`, `*.js`, `*.module`, `*.inc` files changed) AND a dev site exists (`.devsite-host` present), **do not commit until you have visually verified the change in a live browser**. Skipping this step means each visual issue costs a full Phase B deploy cycle (~5–10 min + PHP-FPM restart).
+
+   Process:
+   1. If a Figma design exists for the affected component, fetch it first (`GET /v1/images/:file_key?ids=…`) so you know what "correct" looks like before touching the browser.
+   2. Navigate to the dev site page showing the affected element (using Chrome MCP `navigate`).
+   3. Inject the new CSS rules: `document.head.insertAdjacentHTML('beforeend', '<style>' + CSS + '</style>')` via `javascript_tool`.
+   4. Screenshot and zoom in on the element. Compare against the Figma reference.
+   5. Iterate on the injected CSS in the browser until it matches. Only then write the confirmed rules to the SCSS/CSS files and commit.
+
+   If no connected browser session is available, fall back to Phase B and capture `after.png` via `visual-repro.md` §8. Never use Phase B as a substitute for a browser preview you could have done in 30 seconds.
+
 9. **Verify with `superpowers:verification-before-completion`.** Run the tests. If the test suite requires a full Docker setup (CiviCRM `./scripts/run.sh setup`), do NOT run it locally — record `Tests not run locally — running on CI` and rely on CI green as the gate. For unit/script tests that run fast, run them and paste real output.
 
    **9a. Lint and document to the repo's enforced standard (mandatory before committing).**
