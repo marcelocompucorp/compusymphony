@@ -974,15 +974,6 @@ def poll_until_released(
             f"Release Dev Site build {resolved_build_url} completed with result={result!r}"
         )
 
-    # Jenkins SUCCESS means the Docker stack update was triggered, but the
-    # containers (especially PHP with its long deployment script) may still be
-    # starting. Poll until the site actually serves HTTP 200 — without this
-    # check, callers get a false "deployment complete" signal while Traefik
-    # is still waiting to register the new container on the swarm node.
-    # Remaining timeout after the build = max(deadline - now, 300s).
-    remaining = max(int(deadline - time.monotonic()), 300)
-    wait_until_site_up(site_url, timeout_s=remaining)
-
     return site_url
 
 
