@@ -473,6 +473,17 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
    - **Entity data correct** (images set, published, dates eligible, expected rows present) → code bug confirmed; continue to step 5.
    - **Entity misconfigured** (NULL image FID, unpublished, date constraint not met, record absent) → post a Jira comment quoting structural evidence (IDs, NULL columns, counts — not raw user data), and proceed to step 15 with prefix `blocked-data`.
 
+4b. **Figma design lookup (visual/UI/CSS bugs — mandatory before writing `plan.md`).** If the symptom is any visible styling, layout, sizing, spacing, colour, border, or other UI element, resolve the canonical design reference NOW — before forming any opinion about what the correct fix looks like.
+
+   1. **Check the Jira ticket** description and comments for a Figma link. If found, extract the file key and node IDs.
+   2. **If no Figma link in the ticket** but the repo is the IES theme (`compucorp/ies`), the Design System file key is `MSIkNmzgjKnBotubvJfHWy` (see `CLAUDE.md`). Browse the Figma file tree (`GET /v1/files/:file_key`) or use `GET /v1/files/:file_key/nodes` to locate the component matching the ticket's element name.
+   3. **Fetch a render** of the relevant node: `GET /v1/images/:file_key?ids=NODE_ID&format=png&scale=2` — this returns a temporary S3 URL. Download with `curl -sL -o figma-ref.png` then `Read` the file to inspect it visually. (Node IDs in Figma share URLs use `-`; the API expects `:`.)
+   4. **Quote the finding in `plan.md`**: the node ID examined, what dimension/style values you observe in the design (e.g. `border-radius: 12px`, `width: 40px`, `no border`). This becomes the "Expected" baseline for the visual assertion in `repro.py`.
+
+   **Why this matters:** IESBUILD-248 spent six Phase B deploy cycles (≈50 min of wait + 502 downtime) iterating on avatar CSS without a design reference — properties were removed, re-added, and changed back-and-forth because the target state was undefined. A 30-second Figma fetch at this step would have fixed the issue in one deploy.
+
+   **Skip only when:** (a) no Figma file is discoverable AND the ticket's before/after screenshots are unambiguous about the target state, OR (b) the fix is purely functional with no visible UI change. Document the reason for skipping in `plan.md`.
+
 5. **Clone the target repo(s).**
 
    - **Client-exclusive bugs (single-target):** clone the client repo into `./repo-client/` in the workspace. Do **not** create `./repo-core/`. Subsequent steps that reference `./repo-core/` apply only to dual-target runs (each such step is explicitly scoped). The run is single-target whenever `./repo-core/` is absent from the workspace.
