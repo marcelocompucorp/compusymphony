@@ -476,13 +476,13 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 4b. **Figma design lookup (visual/UI/CSS bugs — mandatory before writing `plan.md`).** If the symptom is any visible styling, layout, sizing, spacing, colour, border, or other UI element, resolve the canonical design reference NOW — before forming any opinion about what the correct fix looks like.
 
    1. **Check the Jira ticket** description and comments for a Figma link. If found, extract the file key and node IDs.
-   2. **If no Figma link in the ticket** but the repo is the IES theme (`compucorp/ies`), the Design System file key is `MSIkNmzgjKnBotubvJfHWy` (see `CLAUDE.md`). Browse the Figma file tree (`GET /v1/files/:file_key`) or use `GET /v1/files/:file_key/nodes` to locate the component matching the ticket's element name.
+   2. **If no Figma link in the ticket:** for `compucorp/ies`, the Design System file key is `MSIkNmzgjKnBotubvJfHWy` (see `CLAUDE.md`). For other repos (e.g. `compucorp/ase`), check the ticket for any attached mockup or Confluence spec — if none, proceed to the skip condition below. To browse the IES file tree and locate the component node, call `GET /v1/files/:file_key` (auth: header `X-Figma-Token: $FIGMA_TOKEN` — env var, see `CLAUDE.md`) and search the returned node tree for the component matching the ticket's element name. Note the node ID. Do NOT call `GET /v1/files/:file_key/nodes` without `?ids=` — that endpoint requires a node ID and will 400 without it.
    3. **Fetch a render** of the relevant node: `GET /v1/images/:file_key?ids=NODE_ID&format=png&scale=2` — this returns a temporary S3 URL. Download with `curl -sL -o figma-ref.png` then `Read` the file to inspect it visually. (Node IDs in Figma share URLs use `-`; the API expects `:`.)
    4. **Quote the finding in `plan.md`**: the node ID examined, what dimension/style values you observe in the design (e.g. `border-radius: 12px`, `width: 40px`, `no border`). This becomes the "Expected" baseline for the visual assertion in `repro.py`.
 
    **Why this matters:** IESBUILD-248 spent six Phase B deploy cycles (≈50 min of wait + 502 downtime) iterating on avatar CSS without a design reference — properties were removed, re-added, and changed back-and-forth because the target state was undefined. A 30-second Figma fetch at this step would have fixed the issue in one deploy.
 
-   **Skip only when:** (a) no Figma file is discoverable AND the ticket's before/after screenshots are unambiguous about the target state, OR (b) the fix is purely functional with no visible UI change. Document the reason for skipping in `plan.md`.
+   **Skip only when:** (a) no Figma file is discoverable AND no attached mockup exists AND the ticket's before/after screenshots are unambiguous about the target state, OR (b) the fix is purely functional with no visible UI change. Document the reason for skipping in `plan.md`.
 
 5. **Clone the target repo(s).**
 
@@ -531,16 +531,16 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
    **Build-artifact policy (theme repos).** If you edit `*.scss`/`*.sass` in a theme directory that has a build script (`package.json` with a `"build"` script, or `gulpfile.js`), also regenerate the corresponding compiled CSS (`dist/css/*.css` or equivalent) and commit it in the same fix commit. `compucorp/ase` and `compucorp/ies` both serve the committed compiled CSS directly via theme `.info` declarations and do NOT rebuild in CI — an SCSS-source-only PR deploys with no styling change. If the local build produces output incompatible with the committed format (e.g., minified vs expanded), hand-append the compiled rules in the expected format and document this in PR `## Comments`. See `code-reviewer.md` "Build-artifact policy" section for the reviewer-side invariant.
 
-   **CSS browser-preview before commit (mandatory when a connected browser is available).** When the diff is CSS/SCSS-only (no `*.php`, `*.js`, `*.module`, `*.inc` files changed) AND a dev site exists (`.devsite-host` present), **do not commit until you have visually verified the change in a live browser**. Skipping this step means each visual issue costs a full Phase B deploy cycle (~5–10 min + PHP-FPM restart).
+   **CSS browser-preview before commit (mandatory when a connected browser is available).** When the diff is CSS/SCSS-only (no `*.php`, `*.js`, `*.module`, `*.inc` files changed) AND a staging/dev URL is resolvable (from the ticket or step 3b Mongo lookup) AND a browser session is available (`mcp__Claude_in_Chrome__list_connected_browsers` returns a session), **do not commit until you have visually verified the change in a live browser**. Skipping this step means each visual issue costs a full Phase B deploy cycle (~5–10 min + PHP-FPM restart).
 
    Process:
    1. If a Figma design exists for the affected component, fetch it first (`GET /v1/images/:file_key?ids=…`) so you know what "correct" looks like before touching the browser.
-   2. Navigate to the dev site page showing the affected element (using Chrome MCP `navigate`).
+   2. Navigate to the staging or dev site page showing the affected element (using Chrome MCP `navigate`).
    3. Inject the new CSS rules: `document.head.insertAdjacentHTML('beforeend', '<style>' + CSS + '</style>')` via `javascript_tool`.
    4. Screenshot and zoom in on the element. Compare against the Figma reference.
    5. Iterate on the injected CSS in the browser until it matches. Only then write the confirmed rules to the SCSS/CSS files and commit.
 
-   If no connected browser session is available, fall back to Phase B and capture `after.png` via `visual-repro.md` §8. Never use Phase B as a substitute for a browser preview you could have done in 30 seconds.
+   If no connected browser session is available, the §8 injection path in `visual-repro.md` (run at step 10) serves as the fallback — that path also uses CSS injection on staging without a deploy. Never treat Phase B (step 12b-bis) as a substitute for a browser preview you could have done in 30 seconds.
 
 9. **Verify with `superpowers:verification-before-completion`.** Run the tests. If the test suite requires a full Docker setup (CiviCRM `./scripts/run.sh setup`), do NOT run it locally — record `Tests not run locally — running on CI` and rely on CI green as the gate. For unit/script tests that run fast, run them and paste real output.
 

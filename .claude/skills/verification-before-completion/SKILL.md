@@ -3,6 +3,11 @@ name: verification-before-completion
 description: Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always
 ---
 
+<!-- Symphony project-level extension of the superpowers plugin version.
+     This file adds the "CSS/visual bug fixed" row to Common Failures (specific
+     to Symphony's browser-inject workflow). On plugin updates, check whether
+     the plugin's SKILL.md has changed and re-apply this extension manually. -->
+
 # Verification Before Completion
 
 ## Overview
