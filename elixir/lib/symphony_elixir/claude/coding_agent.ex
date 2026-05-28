@@ -522,4 +522,7 @@ defmodule SymphonyElixir.Claude.CodingAgent do
     line = message |> Map.put("jsonrpc", "2.0") |> Jason.encode!()
     Port.command(port, line <> "\n")
   end
+
+  @doc false
+  def maybe_put_model_for_test(params), do: maybe_put_model(params)
 end

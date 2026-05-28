@@ -72,4 +72,20 @@ defmodule SymphonyElixir.Claude.CodingAgentTest do
 
     assert ClaudeConfig.model() == "claude-opus-4-8"
   end
+
+  test "turn/start params include the model key when pinned" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      command: "echo done",
+      claude_model: "claude-opus-4-8"
+    )
+
+    params = ClaudeAgent.maybe_put_model_for_test(%{"threadId" => "t1"})
+    assert params["model"] == "claude-opus-4-8"
+  end
+
+  test "turn/start params omit the model key when not pinned (CLI default)" do
+    params = ClaudeAgent.maybe_put_model_for_test(%{"threadId" => "t1"})
+    refute Map.has_key?(params, "model")
+  end
 end

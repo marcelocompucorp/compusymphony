@@ -582,18 +582,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   # Claude backend exposes a dedicated model field; Codex carries its model
   # inside the command string, so we leave it as just the kind there.
   defp agent_label do
-    case agent_model() do
-      nil -> agent_kind()
-      model -> "#{agent_kind()} · #{model}"
+    kind = agent_kind()
+
+    case agent_model(kind) do
+      nil -> kind
+      model -> "#{kind} · #{model}"
     end
   end
 
-  defp agent_model do
-    case agent_kind() do
-      "claude" -> SymphonyElixir.Claude.Config.model()
-      _ -> nil
-    end
-  end
+  defp agent_model("claude"), do: SymphonyElixir.Claude.Config.model()
+  defp agent_model(_kind), do: nil
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
