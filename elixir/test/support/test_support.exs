@@ -261,11 +261,14 @@ defmodule SymphonyElixir.TestSupport do
 
   defp agent_backend_yaml("claude", config) do
     command = Keyword.get(config, :command)
+    model = Keyword.get(config, :claude_model)
 
     [
       "claude:",
-      "  command: #{yaml_value(command)}"
+      "  command: #{yaml_value(command)}",
+      model && "  model: #{yaml_value(model)}"
     ]
+    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 

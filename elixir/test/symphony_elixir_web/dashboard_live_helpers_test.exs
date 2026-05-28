@@ -84,4 +84,36 @@ defmodule SymphonyElixirWeb.DashboardLiveHelpersTest do
       assert DashboardLive.truncate_title_for_test(exact) == exact
     end
   end
+
+  describe "agent_label/0" do
+    alias SymphonyElixir.Workflow
+
+    test "appends the pinned Claude model when configured" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        agent_kind: "claude",
+        command: "symphony-claude",
+        claude_model: "claude-opus-4-8"
+      )
+
+      assert DashboardLive.agent_label_for_test() == "claude · claude-opus-4-8"
+    end
+
+    test "shows just the kind when no Claude model is pinned" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        agent_kind: "claude",
+        command: "symphony-claude"
+      )
+
+      assert DashboardLive.agent_label_for_test() == "claude"
+    end
+
+    test "shows just the kind for non-Claude agents" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        agent_kind: "codex",
+        command: "codex app-server --model gpt-5.3-codex"
+      )
+
+      assert DashboardLive.agent_label_for_test() == "codex"
+    end
+  end
 end

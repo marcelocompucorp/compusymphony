@@ -2,6 +2,7 @@ defmodule SymphonyElixir.Claude.CodingAgentTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Claude.CodingAgent, as: ClaudeAgent
+  alias SymphonyElixir.Claude.Config, as: ClaudeConfig
   alias SymphonyElixir.Workflow
 
   setup do
@@ -56,5 +57,19 @@ defmodule SymphonyElixir.Claude.CodingAgentTest do
   test "CodingAgent routes to Claude by default" do
     write_workflow_file!(Workflow.workflow_file_path(), agent_kind: nil)
     assert SymphonyElixir.CodingAgent.adapter() == SymphonyElixir.Claude.CodingAgent
+  end
+
+  test "Claude.Config.model returns nil when unset (CLI default)" do
+    assert ClaudeConfig.model() == nil
+  end
+
+  test "Claude.Config.model returns the configured model" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude",
+      command: "echo done",
+      claude_model: "claude-opus-4-8"
+    )
+
+    assert ClaudeConfig.model() == "claude-opus-4-8"
   end
 end

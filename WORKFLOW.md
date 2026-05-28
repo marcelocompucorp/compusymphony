@@ -52,6 +52,10 @@ agent:
   max_turns: 30
 claude:
   command: symphony-claude
+  # Pin the coding agent to a specific Claude model (passed to the CLI as
+  # --model). Omit to use the `claude` CLI default. The independent reviewer
+  # subagent stays on `opus` (see invariant #9) for cross-model independence.
+  model: claude-opus-4-8
 observability:
   # ANSI dashboard disabled — it doesn't render cleanly in some terminals
   # (macOS Terminal.app in particular). The Phoenix HTTP dashboard is enabled

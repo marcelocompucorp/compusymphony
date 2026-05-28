@@ -226,10 +226,8 @@ defmodule SymphonyElixir.Claude.CodingAgent do
   end
 
   defp start_turn(port, thread_id, prompt, issue, workspace) do
-    send_message(port, %{
-      "method" => "turn/start",
-      "id" => @turn_start_id,
-      "params" => %{
+    params =
+      %{
         "threadId" => thread_id,
         "input" => [
           %{
@@ -240,11 +238,26 @@ defmodule SymphonyElixir.Claude.CodingAgent do
         "cwd" => Path.expand(workspace),
         "title" => "#{issue.identifier}: #{issue.title}"
       }
+      |> maybe_put_model()
+
+    send_message(port, %{
+      "method" => "turn/start",
+      "id" => @turn_start_id,
+      "params" => params
     })
 
     case await_response(port, @turn_start_id) do
       {:ok, %{"turn" => %{"id" => turn_id}}} -> {:ok, turn_id}
       other -> other
+    end
+  end
+
+  # Pin the turn to a specific Claude model when `claude.model` is configured.
+  # When unset, we omit the field entirely so the `claude` CLI uses its default.
+  defp maybe_put_model(params) do
+    case SymphonyElixir.Claude.Config.model() do
+      nil -> params
+      model -> Map.put(params, "model", model)
     end
   end
 

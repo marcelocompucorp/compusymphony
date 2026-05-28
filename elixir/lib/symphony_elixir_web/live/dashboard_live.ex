@@ -57,7 +57,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
           <div class="status-stack">
             <span class="status-badge status-badge-info">ITS: <%= tracker_kind() %></span>
-            <span class="status-badge status-badge-info">Agent: <%= agent_kind() %></span>
+            <span class="status-badge status-badge-info">Agent: <%= agent_label() %></span>
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               Live
@@ -567,12 +567,33 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @doc false
   def truncate_title_for_test(title), do: truncate_title(title)
 
+  @doc false
+  def agent_label_for_test, do: agent_label()
+
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
   end
 
   defp tracker_kind, do: SymphonyElixir.Config.tracker_kind()
   defp agent_kind, do: SymphonyElixir.Config.agent_kind()
+
+  # Badge label for the active coding agent, suffixed with the exact pinned
+  # model when one is configured (e.g. "claude · claude-opus-4-8"). Only the
+  # Claude backend exposes a dedicated model field; Codex carries its model
+  # inside the command string, so we leave it as just the kind there.
+  defp agent_label do
+    case agent_model() do
+      nil -> agent_kind()
+      model -> "#{agent_kind()} · #{model}"
+    end
+  end
+
+  defp agent_model do
+    case agent_kind() do
+      "claude" -> SymphonyElixir.Claude.Config.model()
+      _ -> nil
+    end
+  end
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
