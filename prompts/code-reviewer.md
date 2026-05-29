@@ -312,6 +312,12 @@ If the agent invoked the visual-repro skill, the workspace will contain `<worksp
      ```python
      assert state["bug1"]["borderRadius"] != "0px"   # green-lights 50% (circle) when spec is 8px (rounded square)
      assert state["bug3"]["bg"] != "rgb(161, 189, 71)"  # green-lights any other colour, including a different wrong one
+     assert link_color != container_bg               # contrast bug: green-lights a still-near-invisible link (#1A1730 on #1B1731, ~1.01:1)
+     ```
+     For contrast/visibility bugs the falsifiable form is the **measured WCAG ratio**, not `!=`:
+     ```python
+     from repro_helpers import wcag_contrast
+     assert wcag_contrast(link_color, container_bg) >= 4.5   # AA normal text; 3.0 for large/bold
      ```
      The fix is to test against the **expected** value pulled from the ticket / design ref / plan investigation:
      ```python

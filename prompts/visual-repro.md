@@ -305,10 +305,18 @@ FIX_CSS = """
 
 def assert_bug_fixed(page):
     """Inverse of assert_bug_reproduced. Symptom must be gone after CSS injection."""
-    # e.g.:
-    # color = page.locator("...").evaluate("e => getComputedStyle(e).color")
-    # bg    = page.locator("...").evaluate("e => getComputedStyle(e).backgroundColor")
-    # assert color != bg, f"Expected fix to change link color; got equal {color!r}=={bg!r}"
+    # For contrast / visibility colour bugs, assert the MEASURED WCAG ratio
+    # clears the AA threshold — NOT just `color != bg`. A near-invisible link
+    # (e.g. #1A1730 on #1B1731, ~1.01:1) passes `color != bg` while the bug is
+    # still present; `color != bg` is a sentinel assertion (see code-reviewer.md §2a).
+    # from repro_helpers import wcag_contrast
+    # fg = page.locator("...").evaluate("e => getComputedStyle(e).color")
+    # bg = page.locator("...").evaluate("e => getComputedStyle(e).backgroundColor")
+    # ratio = wcag_contrast(fg, bg)              # AA: >=4.5 normal text, >=3.0 large/bold
+    # assert ratio >= 4.5, f"link contrast {ratio:.2f}:1 < AA 4.5:1 (fg={fg!r} bg={bg!r})"
+    # NOTE: if `bg` reads as transparent / rgba(...,0) the element has no own
+    # background — walk up to the painted ancestor (the section carrying the
+    # bg-primary/bg-dark class) and read ITS backgroundColor instead.
     pass
 
 
@@ -358,7 +366,7 @@ The `grep '^+[^+]'` skips the `+++ b/<file>` header line; `sed 's/^+//'` strips 
 
 Define the structural inverse of `assert_bug_reproduced`, **using the same `page.locator(...)` selector** so you assert against the same element pre- and post-injection. Rewriting the selector for the after-pass can silently assert against a different element and pass for the wrong reason. The pair-assertion ensures the after-state actually flips the relevant DOM property, not just the screenshot pixels:
 
-- Before: `assert link_color == container_bg` → After: `assert link_color != container_bg`
+- Before: `assert wcag_contrast(link_color, container_bg) < 4.5` → After: `assert wcag_contrast(link_color, container_bg) >= 4.5` — for contrast/visibility bugs assert the **measured WCAG ratio**, not `link_color != container_bg`. The `!=` form is a sentinel: it passes on a still-near-invisible link (e.g. `#1A1730` on `#1B1731`, ~1.01:1). AA = 4.5 (normal text), 3.0 (large/bold). `wcag_contrast` lives in `repro_helpers.py` but is **not** in the Pattern 1–3 import blocks above — add it to your `from repro_helpers import (...)` line (or import it locally, as the §8 example shows) when you use it.
 - Before: `assert "show" in collapse.class_list` → After: `assert "show" not in collapse.class_list`
 
 #### Async state assertions — use Playwright's retrying `expect`, not `wait_for_timeout + is_visible`

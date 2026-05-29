@@ -213,6 +213,97 @@ def dismiss_cookie_banner(page: "Page") -> bool:
         return False
 
 
+# --- Color / contrast utility (WCAG AA) ---
+
+_RGB_RE = re.compile(
+    r"rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)",
+    re.IGNORECASE,
+)
+
+
+def _parse_css_color(color: str) -> tuple[float, float, float]:
+    """Parse a CSS color into an (r, g, b) tuple of 0–255 floats.
+
+    Accepts the `rgb()` / `rgba()` forms that Chromium's
+    `getComputedStyle().color` / `.backgroundColor` return, plus `#rgb` /
+    `#rrggbb` hex (handy when asserting against a FIX_CSS literal). Alpha is
+    parsed-then-ignored: WCAG contrast is computed on opaque channel values,
+    which is correct once a color has composited over its background.
+
+    Raises ValueError on anything else (`transparent`, `rgba(...,0)`, named
+    colors, `hsl()`/`color()`) so callers fail loudly rather than measuring a
+    bogus ratio against a non-painted color.
+    """
+    color = color.strip()
+    m = _RGB_RE.match(color)
+    if m:
+        # Refuse non-opaque colors: a translucent/transparent value has no
+        # single painted color, so its contrast against a background is
+        # undefined until composited. rgba(...,0) (the common "no own
+        # background" case) and any alpha < 1 raise rather than measure a lie.
+        if m.group(4) is not None and float(m.group(4)) < 1:
+            raise ValueError(
+                f"non-opaque CSS color {color!r} (alpha={m.group(4)}); contrast is "
+                "undefined against a translucent color. Read the painted ancestor's "
+                "backgroundColor (the section carrying the bg class), not this element's."
+            )
+        rgb = (float(m.group(1)), float(m.group(2)), float(m.group(3)))
+        # Channels must be 0–255. getComputedStyle never emits out-of-range, so a
+        # violation means a hand-written FIX_CSS literal typo — raise rather than
+        # compute an out-of-domain ratio (would breach the 1.0–21.0 invariant).
+        if any(not 0 <= c <= 255 for c in rgb):
+            raise ValueError(
+                f"CSS color {color!r} has a channel outside 0–255: {rgb}. "
+                "Check the literal — getComputedStyle always returns clamped channels."
+            )
+        return rgb
+    if color.startswith("#"):
+        h = color[1:]
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) == 6:
+            return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+    raise ValueError(
+        f"unrecognised CSS color {color!r}; expected rgb()/rgba()/#hex. "
+        "Read the computed value (getComputedStyle returns rgb()/rgba()), not "
+        "the stylesheet token. If backgroundColor reads as transparent / "
+        "rgba(...,0) the element has no own background — walk up to the painted "
+        "ancestor and read ITS backgroundColor."
+    )
+
+
+def _relative_luminance(rgb: tuple[float, float, float]) -> float:
+    """WCAG 2.x relative luminance of an sRGB color (channels 0–255)."""
+    def _lin(c: float) -> float:
+        c = c / 255.0
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (_lin(x) for x in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def wcag_contrast(color_a: str, color_b: str) -> float:
+    """Return the WCAG contrast ratio (1.0–21.0) between two CSS colors.
+
+    Order-independent. Use this to assert a foreground (text/link) clears the
+    AA threshold against its background instead of the weaker `color != bg`
+    sentinel — a near-invisible link (e.g. #1A1730 on #1B1731, ~1.01:1) passes
+    `color != bg` while the contrast bug is still present. AA thresholds:
+      - normal text: >= 4.5
+      - large text (>=18pt, or >=14pt bold): >= 3.0
+
+    Example::
+
+        fg = page.locator("a").evaluate("e => getComputedStyle(e).color")
+        bg = page.locator(".section").evaluate("e => getComputedStyle(e).backgroundColor")
+        ratio = wcag_contrast(fg, bg)
+        assert ratio >= 4.5, f"link contrast {ratio:.2f}:1 < AA 4.5:1 (fg={fg!r} bg={bg!r})"
+    """
+    la = _relative_luminance(_parse_css_color(color_a))
+    lb = _relative_luminance(_parse_css_color(color_b))
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 # --- Drupal login (form-shape autodetect — SSP-only validated) ---
 
 def compucorp_drupal_login_autodetect(

@@ -42,6 +42,60 @@ class TestAssertStagingHost:
             rh.assert_staging_host("https://www.the-ies.org")
 
 
+class TestWcagContrast:
+    def test_equal_colors_is_one(self):
+        # The IESBUILD-260 collapse: #1A1730 link on a #1A1730 bg.
+        assert rh.wcag_contrast("rgb(26, 23, 48)", "rgb(26, 23, 48)") == pytest.approx(1.0)
+
+    def test_known_ratio_matches_reviewer_measurement(self):
+        # Ayush measured #1A1730 on white/body at 17.37:1 (PR compucorp/ies#228).
+        assert rh.wcag_contrast("#1A1730", "#FFFFFF") == pytest.approx(17.37, abs=0.01)
+
+    def test_black_on_white_is_max(self):
+        assert rh.wcag_contrast("#000", "#FFFFFF") == pytest.approx(21.0, abs=0.01)
+
+    def test_order_independent(self):
+        assert rh.wcag_contrast("#1A1730", "#fff") == pytest.approx(
+            rh.wcag_contrast("#fff", "#1A1730")
+        )
+
+    def test_opaque_rgba_alpha_one_is_accepted(self):
+        assert rh.wcag_contrast("rgba(26, 23, 48, 1)", "#fff") == pytest.approx(17.37, abs=0.01)
+
+    def test_three_digit_hex(self):
+        assert rh.wcag_contrast("#000", "#fff") == pytest.approx(21.0, abs=0.01)
+
+    @pytest.mark.parametrize("color", [
+        "rgba(0, 0, 0, 0)",        # fully transparent — common "no own background"
+        "rgba(255, 255, 255, 0.5)",  # translucent — undefined without compositing
+        "transparent",              # CSS keyword
+        "hsl(0, 50%, 50%)",         # unsupported format
+    ])
+    def test_non_opaque_or_unrecognised_raises(self, color):
+        with pytest.raises(ValueError):
+            rh.wcag_contrast(color, "#fff")
+
+    @pytest.mark.parametrize("color", [
+        "rgb(300, 0, 0)",          # > 255
+        "rgb(256, 256, 256)",      # just over
+        "rgba(0, 0, 0.5, 1)",      # valid-ish but boundary is fine; ensure 255.5 caught below
+        "rgb(255.5, 0, 0)",        # fractional over-range
+    ])
+    def test_out_of_range_channel_raises(self, color):
+        # getComputedStyle never emits these; a hand-written FIX_CSS typo should
+        # fail loudly rather than yield an out-of-domain ratio.
+        if color == "rgba(0, 0, 0.5, 1)":
+            # in-range, must NOT raise
+            assert rh.wcag_contrast(color, "#fff") > 1
+            return
+        with pytest.raises(ValueError):
+            rh.wcag_contrast(color, "#fff")
+
+    def test_channel_boundaries_inclusive(self):
+        # 0 and 255 are valid endpoints, not rejected.
+        assert rh.wcag_contrast("rgb(0, 0, 0)", "rgb(255, 255, 255)") == pytest.approx(21.0, abs=0.01)
+
+
 class TestGetSyspassCred:
     def test_two_step_flow_with_prefer_name(self, syspass_env, monkeypatch):
         """search returns 2 accounts; prefer_name filters to 1; viewPass fetches password."""
