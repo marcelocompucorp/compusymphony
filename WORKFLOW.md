@@ -689,6 +689,20 @@ Use `!<confirmed_filename>|width=800!` to embed the image inline. The `v2` endpo
 
    3a. **Cross-repo cleanup completeness.** If the core fix supersedes inline JS or `Drupal.behaviors` code that the client's subthemes also re-implement, grep `./repo-client/sites/all/themes/custom/*/js/` and `./repo-client/sites/all/modules/{custom,features}/*/` for every handler touching the **same DOM surface** the new core behavior now owns (same selector OR same popup/dropdown container ID OR same toggle-source class). Strip them all in the QA-branch commit — not just the most obvious duplicate. The IESBUILD-247 case: the agent stripped one `.toggle()` line in IES `logout-popup.js` but left two unrelated `.navbar-toggler` `.once()` bindings (in `login-popup.js` and `logout-popup.js`) attached to the same `.navbar-user-login-menu` element that the new core `navbarUserLoginMenuSync` behavior now owns. The orphaned handlers raced with the new behavior; the human reviewer caught it. Use `grep -rn` with the selectors / element IDs the core diff touches, not just an "obvious duplicate" line-level search.
 
+   3b. **Cross-nav-group dropdown scope (compu_bs5 / Drupal 7).** When the fix touches `nested-dropdown.js` or any JS handler that closes "other open" submenus on toggle, verify the close logic uses a global selector — **not** `$menuItem.siblings().find('ul:visible')`. In compu_bs5-based themes the header can have multiple `<nav>` groups (e.g. IES has a top nav and a bottom nav), and submenus in different groups are not jQuery siblings of each other; a siblings-only close leaves cross-group pairs open simultaneously. The correct pattern extracts a shared helper:
+   ```js
+   function closeAllExcept($item, $keep) {
+     const $ancestorSubmenus = $item
+       .parents('.expanded, .dropdown, li[class*="has-children"]')
+       .children('ul');
+     $('header').find('.expanded ul:visible, .dropdown ul:visible, li[class*="has-children"] ul:visible')
+       .not($ancestorSubmenus)   // keep parent containers open for nested menus
+       .not($keep)               // don't hide the submenu we're about to show
+       .hide();
+   }
+   ```
+   Call `closeAllExcept($menuItem, $submenu)` from both click-mode and hover-mode handlers (DRY — one helper, not copy-pasted blocks). IESBUILD-247 QA round 2: after the initial fix landed, the Event dropdown still overlapped the Details dropdown because the handler used siblings-only close across two separate `<nav>` groups.
+
    4. When `PROPAGATION_STATUS != skipped`: push the QA branch:
       ```bash
       git -C ./repo-client push <client-remote> qa-{{ issue.identifier }}
