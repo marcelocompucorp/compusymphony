@@ -59,6 +59,10 @@ agent:
   # can occupy a worker slot for the full turn_timeout_ms before being reaped.
   stall_timeout_ms: 7200000   # orchestrator-side: no :codex_worker_update event
   turn_timeout_ms: 7200000    # adapter-side: no port output within a turn (was 1h)
+  # Abandon an issue after this many dispatch attempts (1 dispatch + retries) so a
+  # genuinely-stuck ticket can't loop forever under the large timeouts above. On
+  # give-up the orchestrator logs loudly and skips the issue until restart/move.
+  max_retries: 5
 claude:
   command: symphony-claude
   # Pin the coding agent to a specific Claude model (passed to the CLI as

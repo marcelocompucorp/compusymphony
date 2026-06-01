@@ -651,6 +651,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       agent_turn_timeout_ms: nil,
       agent_read_timeout_ms: nil,
       agent_stall_timeout_ms: nil,
+      agent_max_retries: nil,
       tracker_api_token: nil,
       tracker_project_slug: nil
     )
@@ -684,6 +685,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.agent_turn_timeout_ms() == 3_600_000
     assert Config.agent_read_timeout_ms() == 5_000
     assert Config.agent_stall_timeout_ms() == 300_000
+    assert Config.agent_max_retries() == 5
 
     write_workflow_file!(Workflow.workflow_file_path(), command: "codex app-server --model gpt-5.3-codex")
     assert CodexConfig.command() == "codex app-server --model gpt-5.3-codex"
@@ -716,6 +718,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), agent_stall_timeout_ms: "bad")
     assert Config.agent_stall_timeout_ms() == 300_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), agent_max_retries: "bad")
+    assert Config.agent_max_retries() == 5
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},

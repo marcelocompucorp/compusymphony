@@ -34,6 +34,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
+      abandoned: MapSet.new(),
       pending: [],
       recent_sessions: [],
       agent_totals: nil,
@@ -232,6 +233,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp warn_on_invalid_config do
+    warn_on_stall_below_turn_timeout()
+
     case Config.validate!() do
       :ok ->
         :ok
@@ -246,6 +249,21 @@ defmodule SymphonyElixir.Orchestrator do
             "\n⚠  Configuration warning: #{reason}\n" <>
             IO.ANSI.reset()
         )
+    end
+  end
+
+  # The orchestrator stall budget must clear the adapter's per-turn silence budget;
+  # otherwise the orchestrator reaps a healthy run mid-turn before the adapter's
+  # turn_timeout fires. This misconfiguration caused the 2026-05-29 retry-loop.
+  defp warn_on_stall_below_turn_timeout do
+    stall = Config.agent_stall_timeout_ms()
+    turn = Config.agent_turn_timeout_ms()
+
+    if stall > 0 and stall < turn do
+      Logger.warning(
+        "agent.stall_timeout_ms (#{stall}) < agent.turn_timeout_ms (#{turn}): the orchestrator " <>
+          "may reap healthy runs mid-turn. Set stall_timeout_ms >= turn_timeout_ms."
+      )
     end
   end
 
@@ -498,6 +516,7 @@ defmodule SymphonyElixir.Orchestrator do
       else
         state.recent_sessions
       end
+
     recent = [session | existing] |> Enum.take(@max_recent_sessions)
     %{state | recent_sessions: recent}
   end
@@ -664,6 +683,7 @@ defmodule SymphonyElixir.Orchestrator do
       candidate_issue?(issue, active_states, terminal_states) and
         !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
         !MapSet.member?(state.claimed, issue.id) and
+        !MapSet.member?(state.abandoned, issue.id) and
         !Map.has_key?(state.running, issue.id)
     end)
   end
@@ -681,13 +701,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed} = state,
+         %State{running: running, claimed: claimed, abandoned: abandoned} = state,
          active_states,
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
+      !MapSet.member?(abandoned, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running)
@@ -887,11 +908,20 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
+    identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
+    error = pick_retry_error(previous_retry, metadata)
+
+    if next_attempt > Config.agent_max_retries() do
+      give_up_on_issue(state, issue_id, identifier, next_attempt, error)
+    else
+      do_schedule_issue_retry(state, issue_id, next_attempt, identifier, error, previous_retry, metadata)
+    end
+  end
+
+  defp do_schedule_issue_retry(state, issue_id, next_attempt, identifier, error, previous_retry, metadata) do
     delay_ms = retry_delay(next_attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
-    identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
-    error = pick_retry_error(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -914,6 +944,31 @@ defmodule SymphonyElixir.Orchestrator do
             error: error
           })
     }
+  end
+
+  # Retry budget (agent.max_retries) exhausted. Stop retrying instead of looping
+  # forever: log loudly, drop any pending retry timer, release the claim, and mark
+  # the issue abandoned so the next poll does not immediately re-dispatch it.
+  # The abandoned set is in-memory — a Symphony restart (or the operator moving the
+  # ticket) is the intended path to retry it.
+  defp give_up_on_issue(%State{} = state, issue_id, identifier, attempt, error) do
+    error_suffix = if is_binary(error), do: " last_error=#{error}", else: ""
+
+    Logger.error(
+      "Abandoning issue_id=#{issue_id} issue_identifier=#{identifier} after #{attempt - 1} failed " <>
+        "attempts (max_retries=#{Config.agent_max_retries()}); no further retries#{error_suffix}. " <>
+        "Restart Symphony or move the ticket to retry."
+    )
+
+    case Map.get(state.retry_attempts, issue_id) do
+      %{timer_ref: old_timer} when is_reference(old_timer) -> Process.cancel_timer(old_timer)
+      _ -> :ok
+    end
+
+    state
+    |> release_issue_claim(issue_id)
+    |> Map.update!(:retry_attempts, &Map.delete(&1, issue_id))
+    |> Map.update!(:abandoned, &MapSet.put(&1, issue_id))
   end
 
   defp pop_retry_attempt_state(%State{} = state, issue_id) do

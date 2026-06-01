@@ -963,6 +963,63 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert remaining_ms <= 10_500
   end
 
+  test "orchestrator abandons an issue once it exhausts max_retries instead of looping" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      agent_stall_timeout_ms: 1_000,
+      agent_max_retries: 2
+    )
+
+    issue_id = "issue-giveup"
+    orchestrator_name = Module.concat(__MODULE__, :GiveUpOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    # retry_attempt: 2 -> next attempt would be 3, which exceeds max_retries: 2.
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: "MT-GIVEUP",
+      issue: %Issue{id: issue_id, identifier: "MT-GIVEUP", state: "In Progress"},
+      session_id: "thread-giveup",
+      last_codex_message: nil,
+      last_codex_timestamp: stale_activity_at,
+      last_codex_event: :notification,
+      started_at: stale_activity_at,
+      retry_attempt: 2
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
+    # worker reaped, no retry scheduled, claim released, issue abandoned
+    refute Process.alive?(worker_pid)
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
+    assert MapSet.member?(state.abandoned, issue_id)
+  end
+
   test "status dashboard renders offline marker to terminal" do
     rendered =
       ExUnit.CaptureIO.capture_io(fn ->
@@ -1591,6 +1648,23 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       identifiers = Enum.map(result, & &1.identifier)
       refute "MT-11" in identifiers
     end
+
+    test "excludes abandoned issues (retry budget exhausted)" do
+      issue_a = %Issue{id: "a", identifier: "MT-10", title: "A", state: "Todo", assigned_to_worker: true}
+      issue_b = %Issue{id: "b", identifier: "MT-11", title: "B", state: "Todo", assigned_to_worker: true}
+
+      state = %Orchestrator.State{
+        running: %{},
+        claimed: MapSet.new(),
+        retry_attempts: %{},
+        abandoned: MapSet.new(["a"]),
+        max_concurrent_agents: 2
+      }
+
+      result = Orchestrator.compute_pending_for_test([issue_a, issue_b], state)
+      ids = Enum.map(result, & &1.id)
+      assert ids == ["b"]
+    end
   end
 
   test "application stop renders offline status" do
@@ -1707,6 +1781,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     make_running_entry = fn issue_id, identifier ->
       process_ref = make_ref()
+
       entry = %{
         pid: self(),
         ref: process_ref,
@@ -1719,6 +1794,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         last_codex_event: nil,
         started_at: DateTime.utc_now()
       }
+
       {process_ref, entry}
     end
 

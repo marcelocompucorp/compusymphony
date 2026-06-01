@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Config do
   @default_agent_turn_timeout_ms 3_600_000
   @default_agent_read_timeout_ms 5_000
   @default_agent_stall_timeout_ms 300_000
+  @default_agent_max_retries 5
   @default_observability_enabled true
   @default_observability_refresh_ms 1_000
   @default_observability_render_interval_ms 16
@@ -85,6 +86,10 @@ defmodule SymphonyElixir.Config do
                                  stall_timeout_ms: [
                                    type: :integer,
                                    default: @default_agent_stall_timeout_ms
+                                 ],
+                                 max_retries: [
+                                   type: :pos_integer,
+                                   default: @default_agent_max_retries
                                  ]
                                ]
                              ],
@@ -243,6 +248,16 @@ defmodule SymphonyElixir.Config do
     |> max(0)
   end
 
+  @doc """
+  Maximum number of dispatch attempts for a single issue before it is abandoned
+  (`agent.max_retries` in WORKFLOW.md). Once an issue's next attempt would exceed
+  this, the orchestrator stops retrying it instead of looping forever.
+  """
+  @spec agent_max_retries() :: pos_integer()
+  def agent_max_retries do
+    get_in(validated_workflow_options(), [:agent, :max_retries])
+  end
+
   @spec workflow_prompt() :: String.t()
   def workflow_prompt do
     case current_workflow() do
@@ -366,6 +381,7 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
+    |> put_if_present(:max_retries, positive_integer_value(Map.get(section, "max_retries")))
   end
 
   defp extract_hooks_options(section) do
