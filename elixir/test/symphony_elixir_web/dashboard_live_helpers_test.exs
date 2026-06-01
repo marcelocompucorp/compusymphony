@@ -3,6 +3,37 @@ defmodule SymphonyElixirWeb.DashboardLiveHelpersTest do
 
   alias SymphonyElixirWeb.DashboardLive
 
+  describe "heartbeat liveness helpers" do
+    # 2024-05-29T18:13:20Z
+    @now DateTime.from_unix!(1_717_006_400)
+
+    test "age is now-minus-ts, clamped at 0 for future/skewed timestamps" do
+      assert DashboardLive.heartbeat_age_seconds_for_test(%{ts: 1_717_006_340}, @now) == 60
+      assert DashboardLive.heartbeat_age_seconds_for_test(%{ts: 1_717_006_400}, @now) == 0
+      # ts in the future (clock skew) clamps to 0, never negative
+      assert DashboardLive.heartbeat_age_seconds_for_test(%{ts: 1_717_006_500}, @now) == 0
+    end
+
+    test "age is nil for a missing/invalid ts" do
+      assert DashboardLive.heartbeat_age_seconds_for_test(%{ts: nil}, @now) == nil
+      assert DashboardLive.heartbeat_age_seconds_for_test(%{}, @now) == nil
+    end
+
+    test "label formats sub-minute and minute+second ages" do
+      assert DashboardLive.heartbeat_age_label_for_test(%{ts: 1_717_006_355}, @now) == "45s ago"
+      assert DashboardLive.heartbeat_age_label_for_test(%{ts: 1_717_006_077}, @now) == "5m23s ago"
+      assert DashboardLive.heartbeat_age_label_for_test(%{ts: nil}, @now) == "n/a"
+    end
+
+    test "stale? is true only past the 180s threshold" do
+      refute DashboardLive.heartbeat_stale_for_test?(%{ts: 1_717_006_280}, @now)
+      # exactly 180s old is not yet stale (strictly greater than)
+      refute DashboardLive.heartbeat_stale_for_test?(%{ts: 1_717_006_220}, @now)
+      assert DashboardLive.heartbeat_stale_for_test?(%{ts: 1_717_006_219}, @now)
+      refute DashboardLive.heartbeat_stale_for_test?(%{ts: nil}, @now)
+    end
+  end
+
   describe "pip_class/3" do
     test "returns pip-done for steps before current" do
       assert DashboardLive.pip_class_for_test(1, 3, 5) == "pip pip-done"

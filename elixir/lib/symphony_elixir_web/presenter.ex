@@ -128,7 +128,8 @@ defmodule SymphonyElixirWeb.Presenter do
         output_tokens: entry.agent_output_tokens,
         total_tokens: entry.agent_total_tokens
       },
-      step_info: read_step_info(entry.identifier)
+      step_info: read_step_info(entry.identifier),
+      heartbeat: read_heartbeat(entry.identifier)
     }
   end
 
@@ -189,6 +190,37 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp read_step_info(_identifier), do: nil
+
+  # Liveness heartbeat written from inside long-running waits (e.g. dev-site
+  # provisioning) where the agent emits no codex events for many minutes.
+  # Separate file from `.symphony-status` so it never races the agent's
+  # step writes, and so a frozen step number can't mask the fact that the
+  # run is still alive. Absent file -> nil (no heartbeat plumbed yet); the
+  # dashboard falls back to the last codex event.
+  defp read_heartbeat(identifier) when is_binary(identifier) do
+    root = Application.get_env(:symphony_elixir, :workspace_root) || Config.workspace_root()
+    path = Path.join([root, identifier, ".symphony-heartbeat"])
+
+    with {:ok, content} <- File.read(path),
+         {:ok, decoded} <- Jason.decode(content),
+         %{"phase" => phase, "ts" => ts} <- decoded,
+         true <- is_binary(phase) and phase != "",
+         true <- is_integer(ts) and ts > 0 do
+      %{
+        phase: phase,
+        ts: ts,
+        state: heartbeat_string(Map.get(decoded, "state")),
+        waiting_on: heartbeat_string(Map.get(decoded, "waiting_on"))
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp read_heartbeat(_identifier), do: nil
+
+  defp heartbeat_string(value) when is_binary(value) and value != "", do: value
+  defp heartbeat_string(_), do: nil
 
   defp running_issue_payload(running) do
     %{

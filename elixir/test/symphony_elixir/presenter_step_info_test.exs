@@ -111,6 +111,78 @@ defmodule SymphonyElixir.PresenterStepInfoTest do
     end
   end
 
+  describe "heartbeat in running_entry_payload" do
+    setup do
+      workspace_root =
+        Path.join(System.tmp_dir!(), "symphony-heartbeat-#{System.unique_integer([:positive])}")
+
+      prev = Application.get_env(:symphony_elixir, :workspace_root)
+      Application.put_env(:symphony_elixir, :workspace_root, workspace_root)
+
+      on_exit(fn ->
+        if is_nil(prev),
+          do: Application.delete_env(:symphony_elixir, :workspace_root),
+          else: Application.put_env(:symphony_elixir, :workspace_root, prev)
+
+        File.rm_rf(workspace_root)
+      end)
+
+      {:ok, workspace_root: workspace_root}
+    end
+
+    defp write_heartbeat(workspace_root, identifier, body) do
+      path = Path.join([workspace_root, identifier, ".symphony-heartbeat"])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, body)
+    end
+
+    test "returns heartbeat when file is valid", %{workspace_root: root} do
+      id = "MT-300"
+      write_heartbeat(root, id, ~s({"phase": "dev-site Phase A: site warm-up", "state": "running", "waiting_on": "host.example", "ts": 1717000000}))
+
+      payload = Presenter.running_entry_payload_for_test(running_snapshot_entry(id))
+
+      assert payload.heartbeat == %{
+               phase: "dev-site Phase A: site warm-up",
+               state: "running",
+               waiting_on: "host.example",
+               ts: 1_717_000_000
+             }
+    end
+
+    test "tolerates optional fields being absent", %{workspace_root: root} do
+      id = "MT-301"
+      write_heartbeat(root, id, ~s({"phase": "opening PR", "ts": 1717000000}))
+
+      payload = Presenter.running_entry_payload_for_test(running_snapshot_entry(id))
+
+      assert payload.heartbeat == %{phase: "opening PR", state: nil, waiting_on: nil, ts: 1_717_000_000}
+    end
+
+    test "returns nil when file is absent" do
+      payload = Presenter.running_entry_payload_for_test(running_snapshot_entry("MT-302"))
+      assert payload.heartbeat == nil
+    end
+
+    test "returns nil on invalid JSON", %{workspace_root: root} do
+      id = "MT-303"
+      write_heartbeat(root, id, "not json {{")
+      payload = Presenter.running_entry_payload_for_test(running_snapshot_entry(id))
+      assert payload.heartbeat == nil
+    end
+
+    test "returns nil when required fields are missing or wrong type", %{workspace_root: root} do
+      id = "MT-304"
+      # ts missing
+      write_heartbeat(root, id, ~s({"phase": "x"}))
+      assert Presenter.running_entry_payload_for_test(running_snapshot_entry(id)).heartbeat == nil
+
+      # phase blank
+      write_heartbeat(root, id, ~s({"phase": "", "ts": 1717000000}))
+      assert Presenter.running_entry_payload_for_test(running_snapshot_entry(id)).heartbeat == nil
+    end
+  end
+
   describe "state_payload/2 error branches include pending and counts" do
     test "timeout branch includes pending: [] and counts.queued: 0" do
       server_name = Module.concat(__MODULE__, :TimeoutServer)

@@ -357,7 +357,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
-                 "step_info" => nil
+                 "step_info" => nil,
+                 "heartbeat" => nil
                }
              ],
              "retrying" => [

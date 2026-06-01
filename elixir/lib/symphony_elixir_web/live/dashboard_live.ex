@@ -7,6 +7,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  # Periodic full reload, independent of codex-driven :observability_updated.
+  # During a long silent wait (e.g. dev-site provisioning) no codex events
+  # fire, so without this the payload — and any freshly written heartbeat or
+  # step file — would never be re-read and the dashboard would freeze.
+  @reload_tick_ms 5_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -18,6 +23,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
       schedule_runtime_tick()
+      schedule_reload_tick()
     end
 
     {:ok, socket}
@@ -27,6 +33,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_info(:runtime_tick, socket) do
     schedule_runtime_tick()
     {:noreply, assign(socket, :now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_info(:reload_payload, socket) do
+    schedule_reload_tick()
+
+    {:noreply,
+     socket
+     |> assign(:payload, load_payload())
+     |> assign(:now, DateTime.utc_now())}
   end
 
   @impl true
@@ -188,37 +204,55 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     </td>
                     <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
                     <td>
-                      <%= case entry.step_info do %>
-                        <% %{step: step, total: total, label: label} -> %>
-                          <div class="step-stack">
-                            <div class="step-header">
-                              <span class="step-badge">Step <%= step %> / <%= total %></span>
-                              <span class="step-label"><%= label %></span>
-                            </div>
-                            <%= if total <= 15 do %>
-                              <div class="step-pips">
-                                <%= for i <- 1..total do %>
-                                  <span class={pip_class(i, step, total)}></span>
-                                <% end %>
+                      <div class="detail-stack">
+                        <%= case entry.step_info do %>
+                          <% %{step: step, total: total, label: label} -> %>
+                            <div class="step-stack">
+                              <div class="step-header">
+                                <span class="step-badge">Step <%= step %> / <%= total %></span>
+                                <span class="step-label"><%= label %></span>
                               </div>
-                            <% else %>
-                              <span class="step-fraction"><%= step %> / <%= total %></span>
-                            <% end %>
-                          </div>
-                        <% nil -> %>
-                          <div class="detail-stack">
+                              <%= if total <= 15 do %>
+                                <div class="step-pips">
+                                  <%= for i <- 1..total do %>
+                                    <span class={pip_class(i, step, total)}></span>
+                                  <% end %>
+                                </div>
+                              <% else %>
+                                <span class="step-fraction"><%= step %> / <%= total %></span>
+                              <% end %>
+                            </div>
+                          <% nil -> %>
                             <span
                               class="event-text"
                               title={entry.last_message || to_string(entry.last_event || "n/a")}
                             ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                            <span class="muted event-meta">
-                              <%= entry.last_event || "n/a" %>
-                              <%= if entry.last_event_at do %>
-                                · <span class="mono numeric"><%= entry.last_event_at %></span>
-                              <% end %>
-                            </span>
-                          </div>
-                      <% end %>
+                        <% end %>
+                        <%!-- Liveness line: always rendered so a frozen step
+                              number never hides the fact the run is alive.
+                              Prefer the heartbeat (written during long silent
+                              waits); fall back to the last codex event. --%>
+                        <%= if entry.heartbeat do %>
+                          <span class="muted event-meta">
+                            <%= entry.heartbeat.phase %><%= if entry.heartbeat.waiting_on do %> · <%= entry.heartbeat.waiting_on %><% end %>
+                            · <span class="mono numeric"><%= heartbeat_age_label(entry.heartbeat, @now) %></span>
+                            <%= cond do %>
+                              <% entry.heartbeat.state == "blocked" -> %>
+                                <span class="step-fraction">blocked</span>
+                              <% heartbeat_stale?(entry.heartbeat, @now) -> %>
+                                <span class="step-fraction">possibly stalled</span>
+                              <% true -> %>
+                            <% end %>
+                          </span>
+                        <% else %>
+                          <span class="muted event-meta">
+                            <%= entry.last_event || "n/a" %>
+                            <%= if entry.last_event_at do %>
+                              · <span class="mono numeric"><%= entry.last_event_at %></span>
+                            <% end %>
+                          </span>
+                        <% end %>
+                      </div>
                     </td>
                     <td>
                       <div class="token-stack numeric">
@@ -572,6 +606,45 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
+  end
+
+  defp schedule_reload_tick do
+    # Jitter so multiple connected dashboards don't phase-align and serialize
+    # their snapshots through the single Orchestrator GenServer in lockstep.
+    Process.send_after(self(), :reload_payload, @reload_tick_ms + :rand.uniform(1_000))
+  end
+
+  # Heartbeats older than this are flagged "possibly stalled". The dev-site
+  # waits poll every 20-30s, so 180s (>= 6 missed writes) avoids false
+  # positives while still catching a genuinely wedged run.
+  @heartbeat_stale_seconds 180
+
+  defp heartbeat_age_seconds(%{ts: ts}, %DateTime{} = now) when is_integer(ts) do
+    max(DateTime.to_unix(now) - ts, 0)
+  end
+
+  defp heartbeat_age_seconds(_heartbeat, _now), do: nil
+
+  @doc false
+  def heartbeat_age_seconds_for_test(hb, now), do: heartbeat_age_seconds(hb, now)
+  @doc false
+  def heartbeat_age_label_for_test(hb, now), do: heartbeat_age_label(hb, now)
+  @doc false
+  def heartbeat_stale_for_test?(hb, now), do: heartbeat_stale?(hb, now)
+
+  defp heartbeat_age_label(heartbeat, now) do
+    case heartbeat_age_seconds(heartbeat, now) do
+      nil -> "n/a"
+      secs when secs < 60 -> "#{secs}s ago"
+      secs -> "#{div(secs, 60)}m#{rem(secs, 60)}s ago"
+    end
+  end
+
+  defp heartbeat_stale?(heartbeat, now) do
+    case heartbeat_age_seconds(heartbeat, now) do
+      nil -> false
+      secs -> secs > @heartbeat_stale_seconds
+    end
   end
 
   defp tracker_kind, do: SymphonyElixir.Config.tracker_kind()
